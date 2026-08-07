@@ -1,43 +1,47 @@
-# Multi-stage build pentru optimizare
+# Multi-stage build - optimized for Railway's constraints
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies + git (needed for some packages)
+# Install only minimal build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
+    gcc g++ make \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install with optimizations
+# Copy requirements early
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user --default-timeout=1000 \
-    --retries 5 --index-url https://pypi.org/simple/ \
+
+# Install Python packages with aggressive optimization
+# Use only pre-built wheels, skip pip cache, increase timeout
+RUN pip install --no-cache-dir \
+    --only-binary :all: \
+    --default-timeout=1000 \
+    --retries 3 \
     -r requirements.txt
 
-# Final stage
+# Final stage - minimal runtime
 FROM python:3.11-slim
 
 WORKDIR /app
 
 # Copy Python packages from builder
-COPY --from=builder /root/.local /root/.local
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application
 COPY app ./app
 COPY models ./models
 
-# Set environment
-ENV PATH=/root/.local/bin:$PATH
+# Environment
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)" || exit 1
 
 # Expose port
 EXPOSE 8000
 
-# Start command
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=2 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)" || exit 1
+
+# Start
 CMD ["sh", "-c", "uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
