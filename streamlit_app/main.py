@@ -229,62 +229,7 @@ elif selected_page == "Predict":
                 
             except requests.RequestException as exc:
                 st.error(f"Eroare la predicția custom: {exc}")
-                            "conditie": details.get("condition"),
-                            "mesaj": details.get("message"),
-                            "motiv": details.get("reason"),
-                            "interval_good": details.get("good_range"),
-                            "interval_moderate": details.get("moderate_range"),
-                            "avertizare_senzor": details.get("sensor_warning"),
-                        }
-                    )
-                st.dataframe(pd.DataFrame(assessment_rows), use_container_width=True)
 
-                active_sensor_warnings = [
-                    details.get("sensor_warning")
-                    for details in feature_assessment.values()
-                    if isinstance(details, dict) and details.get("sensor_warning")
-                ]
-                if active_sensor_warnings:
-                    for warning_message in active_sensor_warnings:
-                        st.warning(warning_message)
-
-            forecast_payload = result.get("forecast") or []
-            if forecast_payload:
-                st.subheader("Prognoză viitoare")
-                forecast_rows = []
-                for item in forecast_payload:
-                    input_values = item.get("input_values") or {}
-                    forecast_rows.append(
-                        {
-                            "orizont_ore": item.get("horizon_hours"),
-                            "predictie": item.get("prediction"),
-                            "incredere": item.get("confidence"),
-                            "temperatura": input_values.get("temperature"),
-                            "umiditate": input_values.get("humidity"),
-                            "pm25": input_values.get("pm25"),
-                            "pm10": input_values.get("pm10"),
-                            "co2": input_values.get("co2"),
-                        }
-                    )
-
-                st.dataframe(pd.DataFrame(forecast_rows), use_container_width=True)
-
-                with st.expander("Detalii prognoză pe parametri", expanded=False):
-                    st.json(forecast_payload)
-        except requests.RequestException as exc:
-            detail = ""
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    detail_json = response.json()
-                    detail = detail_json.get("detail", "")
-                except ValueError:
-                    detail = response.text
-
-            if detail:
-                st.error(f"Eroare la predicție: {detail}")
-            else:
-                st.error(f"Eroare la comunicarea cu API-ul: {exc}")
 elif selected_page == "Train":
     st.title("Train")
     st.write("Antrenarea poate folosi interval pe ore sau pe minute pentru o granularitate mai fină.")
