@@ -1,6 +1,7 @@
 import sys
 import traceback
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -639,7 +640,42 @@ elif selected_page == "Chat":
             st.error(f"Eroare neașteptată: {exc}")
 else:
     st.title("Settings")
-    st.write("Setările aplicației.")
+    st.subheader("Status Railway")
+    st.caption("Verificare live a serviciului backend configurat pentru această interfață.")
+
+    if st.button("Actualizează statusul Railway", type="primary"):
+        st.cache_data.clear()
+
+    started_at = time.perf_counter()
+    try:
+        backend_response = requests.get(f"{BACKEND_BASE_URL}/health", timeout=10)
+        response_time_ms = (time.perf_counter() - started_at) * 1000
+        backend_status = backend_response.json()
+        is_healthy = backend_response.ok and backend_status.get("status") == "ok"
+    except (requests.RequestException, ValueError) as exc:
+        backend_response = None
+        response_time_ms = None
+        backend_status = {"error": str(exc)}
+        is_healthy = False
+
+    railway_col, status_col, latency_col = st.columns(3)
+    with railway_col:
+        st.metric("Backend configurat", "Railway" if ".railway.app" in BACKEND_BASE_URL else "Alt server")
+    with status_col:
+        st.metric("Status API", "Online" if is_healthy else "Indisponibil")
+    with latency_col:
+        st.metric("Timp răspuns", f"{response_time_ms:.0f} ms" if response_time_ms is not None else "N/A")
+
+    st.code(BACKEND_BASE_URL, language=None)
+    if is_healthy:
+        st.success(f"Railway răspunde: {backend_status.get('service', 'serviciu disponibil')}")
+    else:
+        st.error(f"Railway nu răspunde corect: {backend_status.get('error', backend_status)}")
+
+    st.link_button("Deschide Railway Dashboard", "https://railway.app/dashboard")
+    st.caption("CPU, RAM, trafic și istoricul deploy-urilor se văd în dashboard-ul Railway pentru serviciul selectat.")
+
+    st.subheader("Configurație aplicație")
     cfg = get_supabase_config_status()
     st.write(f".env: {cfg['env_path']}")
     st.write(f".env există: {cfg['env_exists']}")
