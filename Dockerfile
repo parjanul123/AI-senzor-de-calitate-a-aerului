@@ -3,8 +3,9 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Instaleaza dependențe de build
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Instaleaza dependențe de build cu retry logic
+RUN apt-get update --allow-releaseinfo-change || apt-get update --allow-releaseinfo-change \
+    && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,8 +18,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instaleaza dependențe runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Instaleaza dependențe runtime cu retry logic
+RUN apt-get update --allow-releaseinfo-change || apt-get update --allow-releaseinfo-change \
+    && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
