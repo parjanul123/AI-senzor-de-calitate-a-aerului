@@ -1,9 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Any, Literal, Optional
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 from app.models.train_model import (
     train_and_save_isolation_forest,
@@ -33,6 +36,9 @@ app.add_middleware(
 
 app.state.latest_prediction = None
 app.state.latest_training = None
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class PredictionResponse(BaseModel):
@@ -117,12 +123,7 @@ def health_check():
 
 @app.get("/")
 def root():
-    return {
-        "service": "air-quality-ai-api",
-        "status": "running",
-        "docs": "/docs",
-        "health": "/health",
-    }
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.post("/predict", response_model=PredictionResponse)

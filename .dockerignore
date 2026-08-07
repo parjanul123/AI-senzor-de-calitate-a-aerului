@@ -13,7 +13,6 @@ __pycache__
 *.log
 .DS_Store
 .tmp_train_check.py
-streamlit_app/
 tests/
 .streamlit/
 *.egg-info

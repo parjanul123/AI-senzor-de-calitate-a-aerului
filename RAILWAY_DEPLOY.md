@@ -1,10 +1,11 @@
-# Ghid Deploy Railway - Air Quality AI API
+# Ghid Deploy Railway - Air Quality AI
 
 ## 📋 Pregătire Inițială
 
 ### 1. Verificare Dependințe
-✅ `requirements.txt` - Actualizat (fără Streamlit)
+✅ `requirements.txt` - Include FastAPI și Streamlit
 ✅ `Dockerfile` - Creat și optimizat pentru Railway  
+✅ `Dockerfile.streamlit` - Container separat pentru interfață
 ✅ `railway.toml` - Configurație Railway
 ✅ `railway.json` - Configurație alternativă Railway
 ✅ `.dockerignore` - Exclude fișiere inutile
@@ -15,7 +16,47 @@
 
 ---
 
-## 🚀 Pași Deploy pe Railway
+## 🚀 Deploy complet în Railway
+
+Proiectul folosește două servicii Railway din același repository:
+
+| Serviciu | Dockerfile | Rol |
+|-----------|------------|-----|
+| `backend` | `Dockerfile` | API FastAPI: predict, train, anomaly, chat |
+| `streamlit` | `Dockerfile.streamlit` | Interfața web pentru utilizator |
+
+### 1. Publică repository-ul
+
+```bash
+git push origin main
+```
+
+### 2. Configurează serviciul backend
+
+1. În proiectul Railway, creează sau păstrează serviciul GitHub existent.
+2. La **Settings → Build**, setează Dockerfile Path la `Dockerfile`.
+3. La **Variables**, setează `SUPABASE_URL` și `SUPABASE_SERVICE_ROLE_KEY`.
+4. La **Networking**, generează un domeniu public.
+
+### 3. Creează serviciul Streamlit
+
+1. În același proiect Railway selectează **New → GitHub Repo** și alege același repository.
+2. La **Settings → Build**, setează Dockerfile Path la `Dockerfile.streamlit`.
+3. La **Variables**, setează:
+
+```text
+BACKEND_BASE_URL=https://ai-senzor-de-calitate-a-aerului-production.up.railway.app
+SUPABASE_URL=<aceeași valoare ca backend-ul>
+SUPABASE_SERVICE_ROLE_KEY=<aceeași valoare ca backend-ul>
+```
+
+4. La **Networking**, generează un domeniu public. Acesta este linkul pe care îl folosești pentru interfața Streamlit.
+
+După fiecare push pe `main`, Railway va redeploya automat ambele servicii.
+
+---
+
+## Deploy API separat
 
 ### Opțiunea A: Deploy via GitHub (Recomandată)
 

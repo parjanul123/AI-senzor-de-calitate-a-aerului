@@ -1,0 +1,28 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --user --no-cache-dir -r /app/requirements.txt
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY --from=builder /root/.local /root/.local
+COPY app /app/app
+COPY streamlit_app /app/streamlit_app
+COPY models /app/models
+
+ENV PATH=/root/.local/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+EXPOSE 8501
+
+CMD ["sh", "-c", "streamlit run streamlit_app/main.py --server.address 0.0.0.0 --server.port ${PORT:-8501}"]
