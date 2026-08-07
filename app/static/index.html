@@ -44,6 +44,14 @@
         <pre id="predict-output">Așteaptă o comandă.</pre>
       </section>
       <section>
+        <h2>Prognoză</h2>
+        <p class="hint">Calculează evoluția estimată folosind istoricul măsurătorilor.</p>
+        <label for="forecast-horizons">Orizonturi (ore, separate prin virgulă)</label>
+        <input id="forecast-horizons" type="text" value="1,3,6,12,24">
+        <button data-action="forecast">Generează prognoza</button>
+        <pre id="forecast-output">Așteaptă o comandă.</pre>
+      </section>
+      <section>
         <h2>Detecție anomalie</h2>
         <p class="hint">Analizează ultima înregistrare cu modelul de anomalii.</p>
         <button data-action="anomaly">Verifică anomalia</button>
@@ -72,7 +80,7 @@
         <pre id="custom-output">Așteaptă o comandă.</pre>
       </section>
     </div>
-    <footer>API disponibilă și la <a href="/docs">/docs</a>.</footer>
+    <footer>Documentație interactivă: <a href="/docs">/docs</a> · Contract JSON: <a href="/openapi.json">/openapi.json</a></footer>
   </main>
   <script>
     async function callApi(path, outputId, options = {}) {
@@ -92,6 +100,7 @@
       } finally { button.disabled = false; }
     }
     document.querySelector('[data-action="predict"]').onclick = () => callApi('/predict', 'predict-output', { action: 'predict' });
+    document.querySelector('[data-action="forecast"]').onclick = () => callApi(`/predict?include_forecast=true&forecast_horizons=${encodeURIComponent(document.getElementById('forecast-horizons').value)}`, 'forecast-output', { action: 'forecast' });
     document.querySelector('[data-action="anomaly"]').onclick = () => callApi('/anomaly', 'anomaly-output', { action: 'anomaly' });
     document.querySelector('[data-action="train"]').onclick = () => callApi('/train', 'train-output', { action: 'train', body: JSON.stringify({ training_model: document.getElementById('model').value, aggregation_hours: Number(document.getElementById('hours').value) }) });
     document.querySelector('[data-action="custom"]').onclick = () => callApi('/predict-custom', 'custom-output', { action: 'custom', body: JSON.stringify(Object.fromEntries(['temperature', 'humidity', 'pm25', 'pm10', 'co2'].map(id => [id, Number(document.getElementById(id).value)]))) });
