@@ -1,4 +1,5 @@
 # Multi-stage build pentru optimizare
+# Build cache buster: 2026-08-07
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
