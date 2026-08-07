@@ -29,3 +29,5 @@ Create the following screens or actions:
 5. Settings: API status from `/health` and data-source status from `/health/data`.
 
 Responses use JSON. Show `detail` when an HTTP response is not successful. A `400` from prediction, forecast, anomaly, or training normally means the configured Supabase data is missing or insufficient.
+
+For Random Forest training, use `training_report.technical_details.evolution` to render the OOB score by iteration. Display `training_report.model_info.n_estimators` as the configured number of trees. Other algorithms can return different evolution metrics or no evolution data.

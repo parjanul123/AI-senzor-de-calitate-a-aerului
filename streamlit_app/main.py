@@ -299,6 +299,7 @@ elif selected_page == "Train":
                 )
                 response.raise_for_status()
                 result = response.json()
+                st.session_state.latest_training_result = result
 
                 st.success("Antrenare finalizată")
                 st.write(result.get("message", ""))
@@ -313,6 +314,7 @@ elif selected_page == "Train":
                 response = requests.post(TRAIN_DEMO_API_URL, timeout=90)
                 response.raise_for_status()
                 result = response.json()
+                st.session_state.latest_training_result = result
 
                 st.success("Antrenare DEMO finalizată")
                 st.write(result.get("message", ""))
@@ -474,6 +476,32 @@ elif selected_page == "Train":
                 
             except requests.RequestException as exc:
                 st.error(f"Eroare la antrenare demo: {exc}")
+
+    latest_training_result = st.session_state.get("latest_training_result")
+    if latest_training_result:
+        latest_training_report = latest_training_result.get("training_report", {})
+        latest_model_info = latest_training_report.get("model_info", {})
+        latest_evolution = latest_training_report.get("technical_details", {}).get("evolution", [])
+        if latest_evolution:
+            st.subheader("Evoluția antrenării")
+            iteration_col, estimator_col = st.columns(2)
+            with iteration_col:
+                st.metric("Număr iterații", len(latest_evolution))
+            with estimator_col:
+                st.metric("Număr arbori", latest_model_info.get("n_estimators", "N/A"))
+
+            latest_evolution_df = pd.DataFrame(latest_evolution)
+            if "oob_score" in latest_evolution_df.columns:
+                latest_oob_scores = pd.to_numeric(latest_evolution_df["oob_score"], errors="coerce")
+                if latest_oob_scores.notna().any():
+                    st.line_chart(
+                        pd.DataFrame({"OOB score": latest_oob_scores}).set_index(latest_evolution_df["step"])
+                    )
+            elif "mean_decision_score" in latest_evolution_df.columns:
+                st.line_chart(latest_evolution_df.set_index("step")["mean_decision_score"])
+
+        with st.expander("Ultimul raport de antrenare", expanded=training_mode == "Real (Supabase)"):
+            st.json(latest_training_report or latest_training_result)
 elif selected_page == "Anomaly":
     st.title("Anomaly")
     st.write("Detecția folosește ultima înregistrare din tabela measurements din Supabase.")
