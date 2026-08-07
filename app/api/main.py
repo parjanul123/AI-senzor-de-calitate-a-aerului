@@ -272,6 +272,7 @@ def predict_custom(data: CustomPredictionRequest):
 
 
 
+@app.post("/train")
 def train_model(request: TrainRequest):
     try:
         if request.training_model == "isolation_forest":
