@@ -26,7 +26,6 @@ build/
 htmlcov/
 data/
 db/
-*.txt
 r*.txt
 resp*.txt
 porneste_server.ps1
