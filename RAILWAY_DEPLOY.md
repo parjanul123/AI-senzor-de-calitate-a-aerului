@@ -1,0 +1,204 @@
+# Ghid Deploy Railway - Air Quality AI API
+
+## 📋 Pregătire Inițială
+
+### 1. Verificare Dependințe
+✅ `requirements.txt` - Actualizat (fără Streamlit)
+✅ `Dockerfile` - Creat și optimizat pentru Railway  
+✅ `railway.toml` - Configurație Railway
+✅ `railway.json` - Configurație alternativă Railway
+✅ `.dockerignore` - Exclude fișiere inutile
+✅ `/health` endpoint - Implementat în FastAPI
+✅ `PORT` dinamic - Configurat în app/core/config.py
+✅ Căi relative - Actualizate
+✅ Modele ML - În folder `models/` cu căi relative
+
+---
+
+## 🚀 Pași Deploy pe Railway
+
+### Opțiunea A: Deploy via GitHub (Recomandată)
+
+#### 1. Pregărează Repository-ul
+```bash
+# Asigură-te că ai comitat toate schimbările
+git add .
+git commit -m "Prepare for Railway deployment"
+git push origin main
+```
+
+#### 2. Conectează Railway cu GitHub
+1. Mergi la [railway.app](https://railway.app)
+2. Login cu GitHub account
+3. Click "New Project" → "Deploy from GitHub repo"
+4. Selectează repository-ul tău
+5. Railway va detecta automat `Dockerfile`
+
+#### 3. Configurează Environment Variables
+În panelul Railway, adaugă sub "Variables":
+
+**REQUIRED:**
+```
+SUPABASE_URL = your-supabase-url
+SUPABASE_SERVICE_ROLE_KEY = your-service-role-key
+```
+
+**OPTIONAL (dacă vrei Ollama chatbot):**
+```
+CHATBOT_USE_OLLAMA = false
+OLLAMA_BASE_URL = http://your-ollama-instance:11434
+OLLAMA_MODEL = qwen2.5:7b-instruct
+```
+
+#### 4. Deploy
+- Railway va detecta Dockerfile și va build + deploy automat
+- Urmărește logs în Railway dashboard
+
+---
+
+### Opțiunea B: Deploy Local (Testing)
+
+#### 1. Build Docker Image
+```bash
+docker build -t air-quality-api:latest .
+```
+
+#### 2. Test Local
+```bash
+docker run -p 8000:8000 \
+  -e SUPABASE_URL="your-url" \
+  -e SUPABASE_SERVICE_ROLE_KEY="your-key" \
+  -e PORT=8000 \
+  air-quality-api:latest
+```
+
+#### 3. Verific Health Check
+```bash
+curl http://localhost:8000/health
+# Expected: {"status":"ok","service":"air-quality-ai-api"}
+```
+
+---
+
+## 🔍 Verific Post-Deploy
+
+### 1. Health Endpoint
+```bash
+curl https://your-railway-url.railway.app/health
+```
+
+### 2. Root Endpoint
+```bash
+curl https://your-railway-url.railway.app/
+```
+
+### 3. Swagger UI
+Accesează: `https://your-railway-url.railway.app/docs`
+
+### 4. Predicție Test
+```bash
+curl -X POST "https://your-railway-url.railway.app/predict" \
+  -H "Content-Type: application/json"
+```
+
+---
+
+## 📁 Structură Finală Proiect
+
+```
+.
+├── app/
+│   ├── __init__.py
+│   ├── api/
+│   │   └── main.py              ← Entry point API (FastAPI)
+│   ├── core/
+│   │   ├── config.py            ← Configurație (PORT dinamic)
+│   │   └── database.py          ← Conexiune Supabase
+│   ├── models/
+│   │   ├── model_manager.py
+│   │   ├── train_model.py
+│   │   └── xgboost_model.py
+│   └── services/
+│       ├── anomaly_detector.py
+│       ├── chatbot.py
+│       └── predictor.py
+│
+├── models/                       ← Modele ML (încărcare relativă)
+│   ├── air_quality_rf.pkl
+│   ├── air_quality_svm.pkl
+│   ├── air_quality_if.pkl
+│   ├── xgboost.pkl
+│   └── air_quality_model.pkl
+│
+├── .env.railway                 ← Template variabile Railway
+├── .dockerignore               ← Exclude din Docker
+├── Dockerfile                  ← Build container
+├── railway.toml                ← Config Railway
+├── railway.json                ← Config alternativă
+├── requirements.txt            ← Dependințe (actualizat)
+└── README.md
+```
+
+---
+
+## ⚙️ Variabile de Mediu Railway
+
+**REQUIRED:**
+| Variabilă | Descriere | Exemplu |
+|-----------|-----------|---------|
+| `SUPABASE_URL` | URL Supabase | `https://xxx.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Cheie serviciu Supabase | `sb_secret_...` |
+
+**OPTIONAL:**
+| Variabilă | Descriere | Default |
+|-----------|-----------|---------|
+| `CHATBOT_USE_OLLAMA` | Activează Ollama | `false` |
+| `OLLAMA_BASE_URL` | URL Ollama | `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL` | Model Ollama | `qwen2.5:7b-instruct` |
+| `CHATBOT_ENABLE_WEB_SEARCH` | Web search | `true` |
+| `PORT` | Port (auto-set) | `8000` |
+| `API_HOST` | Host binding | `0.0.0.0` |
+
+---
+
+## 🔧 Troubleshooting
+
+### Port 8000 Already in Use (Local)
+```bash
+# Schimbă PORT
+docker run -p 9000:8000 -e PORT=8000 air-quality-api:latest
+```
+
+### Health Check Fails
+- Verifică Supabase credentials
+- Verific logs în Railway: `railway logs`
+- Asigură-te că PORT env variable e setat
+
+### Models Not Found
+- Verific că models/ folder este în .dockerignore (NU E!)
+- Verific path-uri relative în config.py
+
+---
+
+## 📊 Monitoring Railway
+
+1. **Logs**: Railway Dashboard → Logs tab
+2. **Metrics**: CPU, RAM, Network usage
+3. **Deployments**: Istoric tuturor build-urilor
+
+---
+
+## 🎯 Checklist Final
+
+- [x] requirements.txt fără Streamlit
+- [x] Dockerfile cu multi-stage build
+- [x] railway.toml și railway.json
+- [x] .env.railway cu variabile necesare
+- [x] config.py cu PORT dinamic
+- [x] /health endpoint activ
+- [x] Modele în folder relativă
+- [x] Fără căi absolute Windows
+- [x] .dockerignore completu
+- [x] App testabilă în container
+
+**Status: ✅ Ready for Railway Deployment**
