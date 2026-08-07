@@ -89,6 +89,17 @@
     <footer>Documentație interactivă: <a href="/docs">/docs</a> · Contract JSON: <a href="/openapi.json">/openapi.json</a></footer>
   </main>
   <script>
+    function formatApiError(detail, status) {
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) {
+        return detail.map(item => item.msg || JSON.stringify(item)).join("\n");
+      }
+      if (detail && typeof detail === "object") {
+        return detail.message || detail.error || JSON.stringify(detail, null, 2);
+      }
+      return `Eroare HTTP ${status}`;
+    }
+
     async function callApi(path, outputId, options = {}) {
       const output = document.getElementById(outputId);
       const button = document.querySelector(`[data-action="${options.action}"]`);
@@ -99,7 +110,7 @@
       try {
         const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, ...options });
         body = await response.json();
-        if (!response.ok) throw new Error(body.detail || `Eroare HTTP ${response.status}`);
+        if (!response.ok) throw new Error(formatApiError(body.detail, response.status));
         output.textContent = JSON.stringify(body, null, 2);
       } catch (error) {
         output.className = "error";
