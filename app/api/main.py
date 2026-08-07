@@ -15,6 +15,7 @@ from app.models.train_model import (
     train_and_save_svm,
 )
 from app.models.xgboost_model import train_and_save_xgboost
+from app.core.database import get_measurements
 from app.services.chatbot import get_chatbot_reply
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality
@@ -119,6 +120,22 @@ class ChatResponse(BaseModel):
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "air-quality-ai-api"}
+
+
+@app.get("/health/data")
+def data_health_check():
+    try:
+        measurements = get_measurements(limit=1, descending=True, raise_on_error=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if measurements.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Tabela 'measurements' nu conține date în proiectul Supabase configurat pentru Railway.",
+        )
+
+    return {"status": "ok", "service": "supabase-measurements", "rows_available": True}
 
 
 @app.get("/")

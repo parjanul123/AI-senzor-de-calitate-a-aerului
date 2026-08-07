@@ -185,6 +185,13 @@ def get_measurements(
 ) -> pd.DataFrame:
     client = _create_supabase_client()
     if client is None:
+        if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+            if raise_on_error:
+                raise RuntimeError(
+                    "Lipsesc variabilele SUPABASE_URL sau SUPABASE_SERVICE_ROLE_KEY. "
+                    "Configurează-le în serviciul Railway."
+                )
+            return pd.DataFrame()
         try:
             records = _fetch_measurements_via_rest(limit=limit, descending=descending)
         except Exception as exc:
