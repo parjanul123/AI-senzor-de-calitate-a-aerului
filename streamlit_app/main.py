@@ -37,7 +37,10 @@ from app.core.database import (
 
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
 API_URL = f"{BACKEND_BASE_URL}/predict"
+API_DEMO_URL = f"{BACKEND_BASE_URL}/predict-demo"
+API_CUSTOM_URL = f"{BACKEND_BASE_URL}/predict-custom"
 TRAIN_API_URL = f"{BACKEND_BASE_URL}/train"
+TRAIN_DEMO_API_URL = f"{BACKEND_BASE_URL}/train-demo"
 ANOMALY_API_URL = f"{BACKEND_BASE_URL}/anomaly"
 CHAT_API_URL = f"{BACKEND_BASE_URL}/chat"
 
@@ -113,51 +116,119 @@ if selected_page == "Dashboard":
     st.write("Pagina de dashboard este gata pentru integrarea datelor și metricilor.")
 elif selected_page == "Predict":
     st.title("Predict")
-    st.write("Predicția folosește ultima înregistrare din tabela measurements din Supabase.")
+    
+    # Choose prediction mode
+    prediction_mode = st.radio(
+        "Selectează modul de predicție:",
+        options=["Real (Supabase)", "Demo (test)", "Custom (manual)"],
+        horizontal=True
+    )
+    
+    if prediction_mode == "Real (Supabase)":
+        st.write("Predicția folosește ultima înregistrare din tabela measurements din Supabase.")
+        use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
+        aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
+        future_hours = st.slider("Ore viitoare pentru prognoză", min_value=0, max_value=48, value=0)
 
-    use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
-    aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
-    st.caption("Prognoză: selectează doar orele viitoare din bara de mai jos.")
-    future_hours = st.slider("Ore viitoare pentru prognoză", min_value=0, max_value=48, value=0)
+        if st.button("Generează predicție"):
+            try:
+                request_url = API_URL
+                query_parts = []
+                if use_hourly_average:
+                    query_parts.append("use_hourly_average=true")
+                    query_parts.append(f"aggregation_hours={aggregation_hours}")
+                if future_hours > 0:
+                    query_parts.append("include_forecast=true")
+                    query_parts.append(f"forecast_horizons={future_hours}")
 
-    if st.button("Generează predicție"):
-        try:
-            request_url = API_URL
-            query_parts = []
-            if use_hourly_average:
-                query_parts.append("use_hourly_average=true")
-                query_parts.append(f"aggregation_hours={aggregation_hours}")
-            if future_hours > 0:
-                query_parts.append("include_forecast=true")
-                query_parts.append(f"forecast_horizons={future_hours}")
+                if query_parts:
+                    request_url = f"{API_URL}?{'&'.join(query_parts)}"
 
-            if query_parts:
-                request_url = f"{API_URL}?{'&'.join(query_parts)}"
+                response = requests.post(request_url, timeout=10)
+                response.raise_for_status()
+                result = response.json()
 
-            response = requests.post(request_url, timeout=10)
-            response.raise_for_status()
-            result = response.json()
+                st.success("Predicție primită")
+                st.write(f"Status: {result.get('status')}")
+                st.write(f"Mesaj: {result.get('message')}")
+                st.write(f"Predicție: {result.get('prediction')}")
+                st.write(f"Încredere: {result.get('confidence')}")
 
-            st.success("Predicție primită")
-            st.write(f"Status: {result.get('status')}")
-            st.write(f"Mesaj: {result.get('message')}")
-            st.write(f"Predicție: {result.get('prediction')}")
-            st.write(f"Încredere: {result.get('confidence')}")
+                st.subheader("Valorile folosite pentru predicție")
+                st.json(result.get("input_values", {}))
 
-            st.subheader("Valorile folosite pentru predicție")
-            st.json(result.get("input_values", {}))
+                feature_assessment = result.get("feature_assessment") or {}
+                if feature_assessment:
+                    st.subheader("Evaluare pe fiecare parametru")
+                    assessment_rows = []
+                    for feature_name, details in feature_assessment.items():
+                        assessment_rows.append(
+                            {
+                                "parametru": feature_name,
+                                "valoare": details.get("value"),
+                                "unitate": details.get("unit"),
+                                "status": details.get("status"),
+                                "human_condition": details.get("human_condition"),
+                            }
+                        )
+                    if assessment_rows:
+                        st.dataframe(pd.DataFrame(assessment_rows))
 
-            feature_assessment = result.get("feature_assessment") or {}
-            if feature_assessment:
-                st.subheader("Evaluare pe fiecare parametru")
-                assessment_rows = []
-                for feature_name, details in feature_assessment.items():
-                    assessment_rows.append(
-                        {
-                            "parametru": feature_name,
-                            "valoare": details.get("value"),
-                            "unitate": details.get("unit"),
-                            "status": details.get("status"),
+            except requests.exceptions.JSONDecodeError:
+                st.error("Eroare: Răspuns invalid de la API. Verifică dacă serverul rulează și dacă baza de date are date.")
+            except requests.RequestException as exc:
+                st.error(f"Eroare la comunicarea cu API-ul /predict: {exc}")
+                
+    elif prediction_mode == "Demo (test)":
+        st.write("Predicție cu date de test - util pentru testing.")
+        st.info("Folosește date pre-definite: T=22.5°C, H=55%, PM2.5=18.5, PM10=35.2, CO2=950ppm")
+        
+        if st.button("Generează predicție DEMO"):
+            try:
+                response = requests.post(API_DEMO_URL, timeout=10)
+                response.raise_for_status()
+                result = response.json()
+
+                st.success("Predicție DEMO primită")
+                st.write(f"Predicție: {result.get('prediction')}")
+                st.write(f"Încredere: {result.get('confidence')}")
+                st.json(result.get("input_values", {}))
+                
+            except requests.RequestException as exc:
+                st.error(f"Eroare la predicția demo: {exc}")
+                
+    else:  # Custom
+        st.write("Introduceți manual valorile pentru predicție:")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            temperature = st.number_input("Temperatura (°C)", value=22.5, min_value=-50.0, max_value=60.0)
+            humidity = st.number_input("Umiditate (%)", value=55.0, min_value=0.0, max_value=100.0)
+            pm25 = st.number_input("PM2.5 (µg/m³)", value=18.5, min_value=0.0, max_value=500.0)
+        with col2:
+            pm10 = st.number_input("PM10 (µg/m³)", value=35.2, min_value=0.0, max_value=500.0)
+            co2 = st.number_input("CO2 (ppm)", value=950.0, min_value=400.0, max_value=5000.0)
+        
+        if st.button("Generează predicție CUSTOM"):
+            try:
+                payload = {
+                    "temperature": temperature,
+                    "humidity": humidity,
+                    "pm25": pm25,
+                    "pm10": pm10,
+                    "co2": co2
+                }
+                response = requests.post(API_CUSTOM_URL, json=payload, timeout=10)
+                response.raise_for_status()
+                result = response.json()
+
+                st.success("Predicție CUSTOM primită")
+                st.write(f"Predicție: {result.get('prediction')}")
+                st.write(f"Încredere: {result.get('confidence')}")
+                st.json(result.get("input_values", {}))
+                
+            except requests.RequestException as exc:
+                st.error(f"Eroare la predicția custom: {exc}")
                             "conditie": details.get("condition"),
                             "mesaj": details.get("message"),
                             "motiv": details.get("reason"),
@@ -226,57 +297,82 @@ elif selected_page == "Train":
             return str(value)
         return parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    st.subheader("Selectare algoritm")
-    selected_model = st.radio(
-        "Alege algoritmul pentru antrenare:",
-        options=["random_forest", "xgboost", "svm", "isolation_forest"],
-        format_func=lambda x: {
-            "random_forest": "🌳 Random Forest",
-            "xgboost": "🚀 XGBoost",
-            "svm": "🎯 SVM",
-            "isolation_forest": "🔍 Isolation Forest",
-        }[x],
-    )
-    training_granularity = st.selectbox(
-        "Granularitate antrenare",
-        options=["ore", "minute"],
-        index=0,
+    # Training mode selector
+    training_mode = st.radio(
+        "Selectează modul de antrenare:",
+        options=["Real (Supabase)", "Demo (test)"],
+        horizontal=True
     )
 
-    training_aggregation_hours = 24
-    training_aggregation_minutes = None
-    if training_granularity == "minute":
-        training_aggregation_minutes = st.slider(
-            "Interval pentru antrenare (minute)",
-            min_value=5,
-            max_value=60,
-            value=30,
-            step=5,
+    if training_mode == "Real (Supabase)":
+        st.subheader("Selectare algoritm")
+        selected_model = st.radio(
+            "Alege algoritmul pentru antrenare:",
+            options=["random_forest", "xgboost", "svm", "isolation_forest"],
+            format_func=lambda x: {
+                "random_forest": "🌳 Random Forest",
+                "xgboost": "🚀 XGBoost",
+                "svm": "🎯 SVM",
+                "isolation_forest": "🔍 Isolation Forest",
+            }[x],
         )
-    else:
-        training_aggregation_hours = st.slider(
-            "Interval pentru antrenare (ore)",
-            min_value=1,
-            max_value=720,
-            value=24,
+        training_granularity = st.selectbox(
+            "Granularitate antrenare",
+            options=["ore", "minute"],
+            index=0,
         )
 
-    if st.button("Antrenează modelul", type="primary"):
-        try:
-            response = requests.post(
-                TRAIN_API_URL,
-                json={
-                    "training_model": selected_model,
-                    "aggregation_hours": training_aggregation_hours,
-                    "aggregation_minutes": training_aggregation_minutes,
-                },
-                timeout=90,
+        training_aggregation_hours = 24
+        training_aggregation_minutes = None
+        if training_granularity == "minute":
+            training_aggregation_minutes = st.slider(
+                "Interval pentru antrenare (minute)",
+                min_value=5,
+                max_value=60,
+                value=30,
+                step=5,
             )
-            response.raise_for_status()
-            result = response.json()
+        else:
+            training_aggregation_hours = st.slider(
+                "Interval pentru antrenare (ore)",
+                min_value=1,
+                max_value=720,
+                value=24,
+            )
 
-            st.success("Antrenare finalizată")
-            st.write(result.get("message", ""))
+        if st.button("Antrenează modelul", type="primary"):
+            try:
+                response = requests.post(
+                    TRAIN_API_URL,
+                    json={
+                        "training_model": selected_model,
+                        "aggregation_hours": training_aggregation_hours,
+                        "aggregation_minutes": training_aggregation_minutes,
+                    },
+                    timeout=90,
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                st.success("Antrenare finalizată")
+                st.write(result.get("message", ""))
+                
+            except requests.RequestException as exc:
+                st.error(f"Eroare la antrenare: {exc}")
+    else:  # Demo mode
+        st.info("Antrenare DEMO cu Random Forest pe date din Supabase (24h agregare)")
+        
+        if st.button("Antrenează modelul DEMO", type="primary"):
+            try:
+                response = requests.post(TRAIN_DEMO_API_URL, timeout=90)
+                response.raise_for_status()
+                result = response.json()
+
+                st.success("Antrenare DEMO finalizată")
+                st.write(result.get("message", ""))
+                
+            except requests.RequestException as exc:
+                st.error(f"Eroare la antrenare demo: {exc}")
 
             training_report = result.get("training_report", {})
             dataset_info = training_report.get("dataset_info", {})
