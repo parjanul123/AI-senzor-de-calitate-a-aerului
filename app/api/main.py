@@ -1,6 +1,9 @@
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Any, Literal, Optional
+import pandas as pd
+import numpy as np
 
 from app.models.train_model import (
     train_and_save_isolation_forest,
@@ -17,6 +20,15 @@ app = FastAPI(
     title="Air Quality AI API",
     version="1.0.0",
     description="Backend pentru monitorizarea calității aerului și integrarea cu modele AI"
+)
+
+# Enable CORS for Streamlit and local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.state.latest_prediction = None
@@ -127,7 +139,11 @@ def predict(
             aggregation_hours=aggregation_hours,
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        error_msg = str(exc)
+        raise HTTPException(status_code=400, detail=error_msg) from exc
+    except Exception as exc:
+        error_msg = f"Eroare internă la predicție: {str(exc)}"
+        raise HTTPException(status_code=500, detail=error_msg) from exc
 
     forecast_payload = None
     if include_forecast:
@@ -169,7 +185,93 @@ def predict(
     return response_payload
 
 
-@app.post("/train")
+@app.post("/predict-demo", response_model=PredictionResponse)
+def predict_demo():
+    """Predicție cu date de test (demo) - util pentru testing."""
+    try:
+        # Date de test pentru demo
+        demo_data = {
+            "temperature": 22.5,
+            "humidity": 55.0,
+            "pm25": 18.5,
+            "pm10": 35.2,
+            "co2": 950.0
+        }
+        
+        from app.models.train_model import load_model
+        model = load_model()
+        
+        # Crează DataFrame cu datele demo
+        input_df = pd.DataFrame([demo_data])
+        prediction = model.predict(input_df)[0]
+        confidence = float(np.max(model.predict_proba(input_df)))
+        
+        from app.services.predictor import _build_feature_assessment
+        feature_assessment = _build_feature_assessment(demo_data, sensor_warning_map={})
+        
+        response_payload = PredictionResponse(
+            status="success",
+            message="Predicție de test cu date sample - Date: T=22.5°C, H=55%, PM2.5=18.5, PM10=35.2, CO2=950ppm",
+            prediction=str(prediction),
+            confidence=confidence,
+            input_values=demo_data,
+            feature_assessment=feature_assessment,
+            source_measurement=demo_data,
+            forecast=None,
+        )
+        
+        return response_payload
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Eroare la predicția demo: {str(exc)}") from exc
+
+
+class CustomPredictionRequest(BaseModel):
+    temperature: float = Field(ge=-50, le=60)
+    humidity: float = Field(ge=0, le=100)
+    pm25: float = Field(ge=0, le=500)
+    pm10: float = Field(ge=0, le=500)
+    co2: float = Field(ge=400, le=5000)
+
+
+@app.post("/predict-custom", response_model=PredictionResponse)
+def predict_custom(data: CustomPredictionRequest):
+    """Predicție cu date custom furnizate în request."""
+    try:
+        from app.models.train_model import load_model
+        
+        feature_values = {
+            "temperature": data.temperature,
+            "humidity": data.humidity,
+            "pm25": data.pm25,
+            "pm10": data.pm10,
+            "co2": data.co2
+        }
+        
+        model = load_model()
+        input_df = pd.DataFrame([feature_values])
+        prediction = model.predict(input_df)[0]
+        confidence = float(np.max(model.predict_proba(input_df)))
+        
+        from app.services.predictor import _build_feature_assessment
+        feature_assessment = _build_feature_assessment(feature_values, sensor_warning_map={})
+        
+        response_payload = PredictionResponse(
+            status="success",
+            message="Predicție realizată cu date custom furnizate.",
+            prediction=str(prediction),
+            confidence=confidence,
+            input_values=feature_values,
+            feature_assessment=feature_assessment,
+            source_measurement=feature_values,
+            forecast=None,
+        )
+        
+        return response_payload
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Eroare la predicția custom: {str(exc)}") from exc
+
+
+
 def train_model(request: TrainRequest):
     try:
         if request.training_model == "isolation_forest":
@@ -209,6 +311,8 @@ def train_model(request: TrainRequest):
             trained_model = "random_forest"
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Eroare la antrenare: {str(exc)}") from exc
 
     if request.aggregation_minutes is not None:
         training_message = (
@@ -232,16 +336,47 @@ def train_model(request: TrainRequest):
     return response_payload
 
 
+@app.post("/train-demo")
+def train_demo():
+    """Antrenare demo cu date de test - util pentru testing."""
+    try:
+        # Antrenează modelul cu datele disponibile din bază
+        _, training_report = train_and_save_random_forest(
+            return_report=True,
+            use_hourly_aggregation=True,
+            aggregation_hours=24,
+            aggregation_minutes=None,
+            allow_derived_label_fallback=True,
+        )
+        
+        response_payload = {
+            "status": "success",
+            "message": "Model Random Forest antrenat cu succes pe date demo (24h agregare)",
+            "model_type": "random_forest",
+            "training_report": training_report,
+            "dataset_name": "demo-24h",
+            "notes": "Antrenare demo - folosit pentru testing",
+        }
+        
+        app.state.latest_training = response_payload
+        return response_payload
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Eroare la antrenare demo: {str(exc)}") from exc
+
+
 @app.post("/anomaly")
 def detect_anomaly():
-    result = detect_anomaly_service()
+    try:
+        result = detect_anomaly_service()
 
-    return {
-        "status": "success",
-        "message": "Detecție realizată cu modelul Isolation Forest folosind ultima înregistrare din measurements.",
-        "sensor_id": "latest-measurement",
-        "result": result,
-    }
+        return {
+            "status": "success",
+            "message": "Detecție realizată cu modelul Isolation Forest folosind ultima înregistrare din measurements.",
+            "sensor_id": "latest-measurement",
+            "result": result,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Eroare la detecția de anomalii: {str(exc)}") from exc
 
 
 @app.post("/chat", response_model=ChatResponse)
