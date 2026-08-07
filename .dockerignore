@@ -26,8 +26,8 @@ build/
 htmlcov/
 data/
 db/
-r*.txt
-resp*.txt
+r[0-9].txt
+resp[0-9].txt
 porneste_server.ps1
 streamlit_*.log
 uvicorn_*.log
