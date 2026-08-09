@@ -16,6 +16,20 @@ from app.models.xgboost_model import (
     XGBoostModel,
     train_and_save_xgboost,
 )
+from app.api.main import CustomPredictionRequest
+
+
+def test_custom_prediction_request_has_no_pm_bounds():
+    request = CustomPredictionRequest(
+        temperature=20.0,
+        humidity=50.0,
+        pm25=-1.0,
+        pm10=10_000.0,
+        co2=800.0,
+    )
+
+    assert request.pm25 == -1.0
+    assert request.pm10 == 10_000.0
 
 
 def _sample_measurements_dataframe():

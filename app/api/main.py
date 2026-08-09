@@ -246,8 +246,8 @@ def predict_demo():
 class CustomPredictionRequest(BaseModel):
     temperature: float = Field(ge=-50, le=60)
     humidity: float = Field(ge=0, le=100)
-    pm25: float = Field(ge=0, le=500)
-    pm10: float = Field(ge=0, le=500)
+    pm25: float
+    pm10: float
     co2: float = Field(ge=400, le=5000)
 
 
