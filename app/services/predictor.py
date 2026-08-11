@@ -408,6 +408,24 @@ def _temperature_diurnal_cycle_value(timestamp: pd.Timestamp) -> float:
     return float(DIURNAL_TEMPERATURE_AMPLITUDE * np.cos(phase))
 
 
+def _previous_hour_temperature_average(
+    measurements: pd.DataFrame,
+    latest_timestamp: pd.Timestamp,
+) -> float | None:
+    """Return the average temperature from the full hour preceding the latest measurement."""
+    timestamp_column = _detect_timestamp_column(measurements)
+    if timestamp_column is None:
+        return None
+
+    timestamps = pd.to_datetime(measurements[timestamp_column], errors="coerce", utc=True)
+    temperatures = _extract_numeric_column(measurements, "temperature")
+    previous_hour_end = pd.Timestamp(latest_timestamp).floor("h")
+    previous_hour_start = previous_hour_end - pd.Timedelta(hours=1)
+    previous_hour_values = temperatures[(timestamps >= previous_hour_start) & (timestamps < previous_hour_end)]
+    previous_hour_average = previous_hour_values.mean(skipna=True)
+    return None if pd.isna(previous_hour_average) else float(previous_hour_average)
+
+
 def _compute_feature_slopes_per_hour(measurements: pd.DataFrame) -> dict[str, float]:
     timestamp_column = _detect_timestamp_column(measurements)
     if timestamp_column is None:
@@ -479,6 +497,7 @@ def build_forecast(
 
     slopes = _compute_feature_slopes_per_hour(frame)
     temperature_hour_profile = _compute_temperature_hour_profile(frame)
+    previous_hour_temperature = _previous_hour_temperature_average(frame, latest_timestamp)
     sensor_warning_map = sensor_warning_map or _build_sensor_warning_map()
     model = load_model()
     forecast: list[dict[str, object]] = []
@@ -495,9 +514,13 @@ def build_forecast(
             slope_per_hour = slopes.get(feature_name, 0.0)
             projected_raw = float(current_value) + (slope_per_hour * horizon)
             if feature_name == "temperature":
+                smoothed_temperature = float(current_value)
+                if previous_hour_temperature is not None:
+                    smoothed_temperature = (float(current_value) + previous_hour_temperature) / 2
+                projected_raw = smoothed_temperature + (slope_per_hour * horizon)
                 projected_features[feature_name] = _clamp_forecast_temperature(
                     projected_raw + temperature_calendar_adjustment,
-                    current_value=float(current_value),
+                    current_value=smoothed_temperature,
                     forecast_timestamp=forecast_timestamp,
                     horizon_hours=horizon,
                 )
@@ -521,6 +544,7 @@ def build_forecast(
                 ),
                 "trend_per_hour": {feature: round(slope, 4) for feature, slope in slopes.items()},
                 "temperature_calendar_adjustment": round(temperature_calendar_adjustment, 4),
+                "previous_hour_temperature_average": previous_hour_temperature,
             }
         )
 

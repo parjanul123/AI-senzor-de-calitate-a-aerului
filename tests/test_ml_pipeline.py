@@ -499,6 +499,23 @@ def test_temperature_hour_profile_prioritizes_latest_two_days_same_hour_average(
     assert profile == {12: 30.0}
 
 
+def test_previous_hour_temperature_average_uses_only_the_preceding_full_hour():
+    measurements = pd.DataFrame(
+        [
+            {"created_at": "2026-08-03T17:10:00Z", "temperature": 20.0},
+            {"created_at": "2026-08-03T17:50:00Z", "temperature": 24.0},
+            {"created_at": "2026-08-03T18:05:00Z", "temperature": 30.0},
+        ]
+    )
+
+    previous_hour_average = predictor_module._previous_hour_temperature_average(
+        measurements,
+        pd.Timestamp("2026-08-03T18:05:00Z"),
+    )
+
+    assert previous_hour_average == 22.0
+
+
 def test_temperature_diurnal_fallback_cools_evening_and_warms_afternoon():
     current_timestamp = pd.Timestamp("2026-08-04T17:00:00Z")  # 20:00 Romania
 
