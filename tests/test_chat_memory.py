@@ -25,3 +25,18 @@ def test_chatbot_explains_generic_pm_term():
 
     assert "PM2.5" in reply
     assert "PM10" in reply
+
+
+def test_chatbot_identifies_pm10_as_dust_indicator():
+    reply = get_chatbot_reply("Care indicator arata praful?")
+
+    assert "PM10" in reply
+    assert "praf" in reply.lower()
+
+
+def test_chatbot_extracts_only_pm10_from_pm_10_question():
+    reply = get_chatbot_reply("Care e diferenta dintre pm 1 si pm 10?")
+
+    assert "PM1" in reply
+    assert "PM10" in reply
+    assert "PM2.5" not in reply

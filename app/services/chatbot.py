@@ -153,6 +153,10 @@ REFERENCE_ALIASES: dict[str, str] = {
     "pm 2.5": "pm25",
     "pm25": "pm25",
     "pm10": "pm10",
+    "pm 10": "pm10",
+    "praf": "pm10",
+    "praful": "pm10",
+    "pulberi": "pm10",
     "co2": "co2",
     "co₂": "co2",
     "dioxid de carbon": "co2",
@@ -581,7 +585,8 @@ class RuleBasedAirQualityChatbot:
     def _detect_reference_topics(normalized_message: str) -> list[str]:
         topics: list[str] = []
         for alias, topic in REFERENCE_ALIASES.items():
-            if alias in normalized_message and topic not in topics:
+            pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+            if re.search(pattern, normalized_message) and topic not in topics:
                 topics.append(topic)
 
         for code, topic in REFERENCE_CODE_ALIASES.items():
@@ -589,7 +594,7 @@ class RuleBasedAirQualityChatbot:
             if re.search(pattern, normalized_message) and topic not in topics:
                 topics.append(topic)
 
-        if re.search(r"(?<![a-z0-9])pm(?![a-z0-9])", normalized_message):
+        if re.search(r"(?<![a-z0-9])pm(?![a-z0-9]|\s*\d)", normalized_message):
             for topic in ("pm25", "pm10"):
                 if topic not in topics:
                     topics.append(topic)
