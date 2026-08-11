@@ -485,6 +485,20 @@ def test_temperature_hour_profile_cools_evening_forecast():
     assert adjustment == -10.0
 
 
+def test_temperature_hour_profile_prioritizes_latest_two_days_same_hour_average():
+    measurements = pd.DataFrame(
+        [
+            {"created_at": "2026-08-01T09:00:00Z", "temperature": 10.0},
+            {"created_at": "2026-08-02T09:00:00Z", "temperature": 28.0},
+            {"created_at": "2026-08-03T09:00:00Z", "temperature": 32.0},
+        ]
+    )
+
+    profile = predictor_module._compute_temperature_hour_profile(measurements)
+
+    assert profile == {12: 30.0}
+
+
 def test_temperature_diurnal_fallback_cools_evening_and_warms_afternoon():
     current_timestamp = pd.Timestamp("2026-08-04T17:00:00Z")  # 20:00 Romania
 

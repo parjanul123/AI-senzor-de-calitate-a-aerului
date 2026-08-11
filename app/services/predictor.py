@@ -348,7 +348,7 @@ def _clamp_forecast_temperature(
 
 
 def _compute_temperature_hour_profile(measurements: pd.DataFrame) -> dict[int, float]:
-    """Return local-hour temperature averages from recurring recent observations."""
+    """Return local-hour temperatures, prioritizing the latest-day and previous-day average."""
     timestamp_column = _detect_timestamp_column(measurements)
     if timestamp_column is None:
         return {}
@@ -359,10 +359,28 @@ def _compute_temperature_hour_profile(measurements: pd.DataFrame) -> dict[int, f
     if hourly.empty:
         return {}
 
-    hourly["local_hour"] = hourly["timestamp"].dt.tz_convert(LOCAL_TIMEZONE).dt.hour
+    local_timestamps = hourly["timestamp"].dt.tz_convert(LOCAL_TIMEZONE)
+    hourly["local_hour"] = local_timestamps.dt.hour
+    hourly["local_date"] = local_timestamps.dt.date
     profile = hourly.groupby("local_hour")["temperature"].agg(["mean", "count"])
     profile = profile[profile["count"] >= MIN_CALENDAR_PROFILE_SAMPLES]
-    return {int(hour): float(row["mean"]) for hour, row in profile.iterrows()}
+    result = {int(hour): float(row["mean"]) for hour, row in profile.iterrows()}
+
+    latest_date = max(hourly["local_date"])
+    previous_date = latest_date - pd.Timedelta(days=1)
+    latest_day = hourly[hourly["local_date"] == latest_date]
+    previous_day = hourly[hourly["local_date"] == previous_date]
+    paired_hours = latest_day.merge(
+        previous_day,
+        on="local_hour",
+        suffixes=("_latest", "_previous"),
+    )
+    for _, pair in paired_hours.iterrows():
+        result[int(pair["local_hour"])] = float(
+            (pair["temperature_latest"] + pair["temperature_previous"]) / 2
+        )
+
+    return result
 
 
 def _temperature_calendar_adjustment(
