@@ -38,6 +38,7 @@ MONTHLY_TEMPERATURE_RANGES = {
 }
 LOCAL_TIMEZONE = "Europe/Bucharest"
 MAX_TEMPERATURE_CHANGE_PER_HOUR = 0.25
+MIN_CALENDAR_PROFILE_SAMPLES = 3
 ZERO_WARNING_MIN_SAMPLES = 24
 ZERO_WARNING_RATIO_THRESHOLD = 0.6
 ZERO_WARNING_STREAK_THRESHOLD = 8
@@ -320,6 +321,13 @@ def _clamp_feature_value(feature_name: str, value: float) -> float:
     return float(max(0.0, value))
 
 
+def _to_local_timestamp(timestamp: pd.Timestamp) -> pd.Timestamp:
+    localized = pd.Timestamp(timestamp)
+    if localized.tzinfo is None:
+        localized = localized.tz_localize("UTC")
+    return localized.tz_convert(LOCAL_TIMEZONE)
+
+
 def _clamp_forecast_temperature(
     projected_value: float,
     current_value: float,
@@ -327,10 +335,7 @@ def _clamp_forecast_temperature(
     horizon_hours: int,
 ) -> float:
     """Keep short-term temperature extrapolations seasonally and physically plausible."""
-    local_forecast_timestamp = pd.Timestamp(forecast_timestamp)
-    if local_forecast_timestamp.tzinfo is None:
-        local_forecast_timestamp = local_forecast_timestamp.tz_localize("UTC")
-    local_forecast_timestamp = local_forecast_timestamp.tz_convert(LOCAL_TIMEZONE)
+    local_forecast_timestamp = _to_local_timestamp(forecast_timestamp)
     seasonal_low, seasonal_high = MONTHLY_TEMPERATURE_RANGES[local_forecast_timestamp.month]
     max_change = MAX_TEMPERATURE_CHANGE_PER_HOUR * max(1, horizon_hours)
     short_term_low = current_value - max_change
@@ -338,6 +343,39 @@ def _clamp_forecast_temperature(
     low = max(seasonal_low, short_term_low)
     high = min(seasonal_high, short_term_high)
     return float(min(high, max(low, projected_value)))
+
+
+def _compute_temperature_hour_profile(measurements: pd.DataFrame) -> dict[int, float]:
+    """Return local-hour temperature averages from recurring recent observations."""
+    timestamp_column = _detect_timestamp_column(measurements)
+    if timestamp_column is None:
+        return {}
+
+    timestamps = pd.to_datetime(measurements[timestamp_column], errors="coerce", utc=True)
+    temperatures = _extract_numeric_column(measurements, "temperature")
+    hourly = pd.DataFrame({"timestamp": timestamps, "temperature": temperatures}).dropna()
+    if hourly.empty:
+        return {}
+
+    hourly["local_hour"] = hourly["timestamp"].dt.tz_convert(LOCAL_TIMEZONE).dt.hour
+    profile = hourly.groupby("local_hour")["temperature"].agg(["mean", "count"])
+    profile = profile[profile["count"] >= MIN_CALENDAR_PROFILE_SAMPLES]
+    return {int(hour): float(row["mean"]) for hour, row in profile.iterrows()}
+
+
+def _temperature_calendar_adjustment(
+    hour_profile: dict[int, float],
+    current_timestamp: pd.Timestamp,
+    forecast_timestamp: pd.Timestamp,
+) -> float:
+    """Adjust temperature by the observed local-hour difference between now and the future time."""
+    current_hour = _to_local_timestamp(current_timestamp).hour
+    forecast_hour = _to_local_timestamp(forecast_timestamp).hour
+    current_baseline = hour_profile.get(current_hour)
+    forecast_baseline = hour_profile.get(forecast_hour)
+    if current_baseline is None or forecast_baseline is None:
+        return 0.0
+    return float(forecast_baseline - current_baseline)
 
 
 def _compute_feature_slopes_per_hour(measurements: pd.DataFrame) -> dict[str, float]:
@@ -410,6 +448,7 @@ def build_forecast(
         raise RuntimeError("Nu există suficiente date recente pentru prognoză.")
 
     slopes = _compute_feature_slopes_per_hour(frame)
+    temperature_hour_profile = _compute_temperature_hour_profile(frame)
     sensor_warning_map = sensor_warning_map or _build_sensor_warning_map()
     model = load_model()
     forecast: list[dict[str, object]] = []
@@ -417,12 +456,17 @@ def build_forecast(
     for horizon in sorted(set(int(h) for h in horizons_hours if int(h) > 0)):
         projected_features: dict[str, float] = {}
         forecast_timestamp = latest_timestamp + pd.Timedelta(hours=horizon)
+        temperature_calendar_adjustment = _temperature_calendar_adjustment(
+            temperature_hour_profile,
+            latest_timestamp,
+            forecast_timestamp,
+        )
         for feature_name, current_value in base_feature_values.items():
             slope_per_hour = slopes.get(feature_name, 0.0)
             projected_raw = float(current_value) + (slope_per_hour * horizon)
             if feature_name == "temperature":
                 projected_features[feature_name] = _clamp_forecast_temperature(
-                    projected_raw,
+                    projected_raw + temperature_calendar_adjustment,
                     current_value=float(current_value),
                     forecast_timestamp=forecast_timestamp,
                     horizon_hours=horizon,
@@ -437,6 +481,7 @@ def build_forecast(
         forecast.append(
             {
                 "horizon_hours": horizon,
+                "forecast_at_local": _to_local_timestamp(forecast_timestamp).isoformat(),
                 "prediction": str(projected_prediction),
                 "confidence": projected_confidence,
                 "input_values": projected_features,
@@ -445,6 +490,7 @@ def build_forecast(
                     sensor_warning_map=sensor_warning_map,
                 ),
                 "trend_per_hour": {feature: round(slope, 4) for feature, slope in slopes.items()},
+                "temperature_calendar_adjustment": round(temperature_calendar_adjustment, 4),
             }
         )
 

@@ -183,6 +183,7 @@ elif selected_page == "Predict":
                         forecast_rows.append(
                             {
                                 "peste_ore": forecast_item.get("horizon_hours"),
+                                "moment_local": forecast_item.get("forecast_at_local"),
                                 "predictie": forecast_item.get("prediction"),
                                 "incredere": forecast_item.get("confidence"),
                                 "temperatura": (forecast_item.get("input_values") or {}).get("temperature"),

@@ -462,6 +462,29 @@ def test_august_temperature_forecast_limits_unrealistic_short_term_drop():
     assert forecast_temperature == 18.0
 
 
+def test_temperature_hour_profile_cools_evening_forecast():
+    measurements = pd.DataFrame(
+        [
+            {"created_at": "2026-08-01T09:00:00Z", "temperature": 30.0},
+            {"created_at": "2026-08-01T18:00:00Z", "temperature": 20.0},
+            {"created_at": "2026-08-02T09:00:00Z", "temperature": 30.0},
+            {"created_at": "2026-08-02T18:00:00Z", "temperature": 20.0},
+            {"created_at": "2026-08-03T09:00:00Z", "temperature": 30.0},
+            {"created_at": "2026-08-03T18:00:00Z", "temperature": 20.0},
+        ]
+    )
+
+    profile = predictor_module._compute_temperature_hour_profile(measurements)
+    adjustment = predictor_module._temperature_calendar_adjustment(
+        profile,
+        pd.Timestamp("2026-08-04T09:00:00Z"),
+        pd.Timestamp("2026-08-04T18:00:00Z"),
+    )
+
+    assert profile == {12: 30.0, 21: 20.0}
+    assert adjustment == -10.0
+
+
 def test_temperature_forecast_uses_romanian_local_month():
     # 21:00 UTC on August 31 is September 1 in Romania (UTC+3).
     forecast_timestamp = pd.Timestamp("2026-08-31T21:00:00Z")
