@@ -1001,14 +1001,19 @@ def train_and_save_isolation_forest(
     return model
 
 
-def load_model(model_path: str | Path | None = None, model_type: str | None = None):
+def load_model(
+    model_path: str | Path | None = None,
+    model_type: str | None = None,
+    include_anomaly_models: bool = False,
+):
     """
     Load a trained model. 
     
     Args:
         model_path: Explicit path to model file. If provided, loads this model.
         model_type: Specify which model to load ('random_forest', 'xgboost', 'svm', 'isolation_forest').
-                   If not provided, auto-detects the most recently trained model.
+               If not provided, auto-detects the most recently trained classifier.
+        include_anomaly_models: Include Isolation Forest in automatic model selection.
     
     Returns:
         Loaded model
@@ -1019,7 +1024,9 @@ def load_model(model_path: str | Path | None = None, model_type: str | None = No
             raise FileNotFoundError(f"Model file not found: {target_path}")
         return joblib.load(target_path)
     
-    # Auto-detect which model to load based on modification time
+    # Auto-detect the most recently trained classifier. Isolation Forest is an
+    # anomaly detector and does not implement predict_proba(), which the quality
+    # prediction endpoints require.
     available_models = []
     
     model_paths = {
@@ -1040,6 +1047,8 @@ def load_model(model_path: str | Path | None = None, model_type: str | None = No
     
     # Auto-detect: find most recently modified model
     for mtype, mpath in model_paths.items():
+        if mtype == "isolation_forest" and not include_anomaly_models:
+            continue
         if mpath.exists():
             mtime = mpath.stat().st_mtime
             available_models.append((mtype, mpath, mtime))

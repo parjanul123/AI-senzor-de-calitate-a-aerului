@@ -449,6 +449,33 @@ def test_build_forecast_returns_future_horizons(monkeypatch):
     assert all("feature_assessment" in item for item in forecast)
 
 
+def test_august_temperature_forecast_limits_unrealistic_short_term_drop():
+    forecast_timestamp = pd.Timestamp("2026-08-13T12:00:00Z")
+
+    forecast_temperature = predictor_module._clamp_forecast_temperature(
+        projected_value=9.0,
+        current_value=30.0,
+        forecast_timestamp=forecast_timestamp,
+        horizon_hours=48,
+    )
+
+    assert forecast_temperature == 18.0
+
+
+def test_temperature_forecast_uses_romanian_local_month():
+    # 21:00 UTC on August 31 is September 1 in Romania (UTC+3).
+    forecast_timestamp = pd.Timestamp("2026-08-31T21:00:00Z")
+
+    forecast_temperature = predictor_module._clamp_forecast_temperature(
+        projected_value=5.0,
+        current_value=18.0,
+        forecast_timestamp=forecast_timestamp,
+        horizon_hours=48,
+    )
+
+    assert forecast_temperature == 6.0
+
+
 def test_anomaly_detector_output_shape(tmp_path, monkeypatch):
     model_path = tmp_path / "air_quality_if.pkl"
     database_rows = _sample_measurements_dataframe()

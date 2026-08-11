@@ -30,6 +30,14 @@ FEATURE_UNITS = {
 }
 
 HUMIDITY_RANGE = (0.0, 100.0)
+MONTHLY_TEMPERATURE_RANGES = {
+    1: (-20.0, 22.0), 2: (-18.0, 25.0), 3: (-10.0, 30.0),
+    4: (-2.0, 35.0), 5: (3.0, 38.0), 6: (8.0, 42.0),
+    7: (10.0, 45.0), 8: (10.0, 45.0), 9: (3.0, 40.0),
+    10: (-3.0, 34.0), 11: (-10.0, 28.0), 12: (-18.0, 24.0),
+}
+LOCAL_TIMEZONE = "Europe/Bucharest"
+MAX_TEMPERATURE_CHANGE_PER_HOUR = 0.25
 ZERO_WARNING_MIN_SAMPLES = 24
 ZERO_WARNING_RATIO_THRESHOLD = 0.6
 ZERO_WARNING_STREAK_THRESHOLD = 8
@@ -312,6 +320,26 @@ def _clamp_feature_value(feature_name: str, value: float) -> float:
     return float(max(0.0, value))
 
 
+def _clamp_forecast_temperature(
+    projected_value: float,
+    current_value: float,
+    forecast_timestamp: pd.Timestamp,
+    horizon_hours: int,
+) -> float:
+    """Keep short-term temperature extrapolations seasonally and physically plausible."""
+    local_forecast_timestamp = pd.Timestamp(forecast_timestamp)
+    if local_forecast_timestamp.tzinfo is None:
+        local_forecast_timestamp = local_forecast_timestamp.tz_localize("UTC")
+    local_forecast_timestamp = local_forecast_timestamp.tz_convert(LOCAL_TIMEZONE)
+    seasonal_low, seasonal_high = MONTHLY_TEMPERATURE_RANGES[local_forecast_timestamp.month]
+    max_change = MAX_TEMPERATURE_CHANGE_PER_HOUR * max(1, horizon_hours)
+    short_term_low = current_value - max_change
+    short_term_high = current_value + max_change
+    low = max(seasonal_low, short_term_low)
+    high = min(seasonal_high, short_term_high)
+    return float(min(high, max(low, projected_value)))
+
+
 def _compute_feature_slopes_per_hour(measurements: pd.DataFrame) -> dict[str, float]:
     timestamp_column = _detect_timestamp_column(measurements)
     if timestamp_column is None:
@@ -388,10 +416,19 @@ def build_forecast(
 
     for horizon in sorted(set(int(h) for h in horizons_hours if int(h) > 0)):
         projected_features: dict[str, float] = {}
+        forecast_timestamp = latest_timestamp + pd.Timedelta(hours=horizon)
         for feature_name, current_value in base_feature_values.items():
             slope_per_hour = slopes.get(feature_name, 0.0)
             projected_raw = float(current_value) + (slope_per_hour * horizon)
-            projected_features[feature_name] = _clamp_feature_value(feature_name, projected_raw)
+            if feature_name == "temperature":
+                projected_features[feature_name] = _clamp_forecast_temperature(
+                    projected_raw,
+                    current_value=float(current_value),
+                    forecast_timestamp=forecast_timestamp,
+                    horizon_hours=horizon,
+                )
+            else:
+                projected_features[feature_name] = _clamp_feature_value(feature_name, projected_raw)
 
         projected_df = pd.DataFrame([projected_features])
         projected_prediction = model.predict(projected_df)[0]

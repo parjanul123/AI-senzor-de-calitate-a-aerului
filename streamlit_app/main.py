@@ -130,6 +130,14 @@ elif selected_page == "Predict":
         use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
         aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
         future_hours = st.slider("Ore viitoare pentru prognoză", min_value=0, max_value=48, value=0)
+        forecast_history_days = 7
+        if future_hours > 0:
+            forecast_history_days = st.slider(
+                "Zile istorice folosite pentru prognoză",
+                min_value=1,
+                max_value=30,
+                value=7,
+            )
 
         if st.button("Generează predicție"):
             try:
@@ -141,6 +149,7 @@ elif selected_page == "Predict":
                 if future_hours > 0:
                     query_parts.append("include_forecast=true")
                     query_parts.append(f"forecast_horizons={future_hours}")
+                    query_parts.append(f"forecast_lookback_hours={forecast_history_days * 24}")
 
                 if query_parts:
                     request_url = f"{API_URL}?{'&'.join(query_parts)}"
@@ -174,6 +183,25 @@ elif selected_page == "Predict":
                         )
                     if assessment_rows:
                         st.dataframe(pd.DataFrame(assessment_rows))
+
+                forecast = result.get("forecast") or []
+                if forecast:
+                    st.subheader("Prognoza")
+                    forecast_rows = []
+                    for forecast_item in forecast:
+                        forecast_rows.append(
+                            {
+                                "peste_ore": forecast_item.get("horizon_hours"),
+                                "predictie": forecast_item.get("prediction"),
+                                "incredere": forecast_item.get("confidence"),
+                                "temperatura": (forecast_item.get("input_values") or {}).get("temperature"),
+                                "umiditate": (forecast_item.get("input_values") or {}).get("humidity"),
+                                "pm25": (forecast_item.get("input_values") or {}).get("pm25"),
+                                "pm10": (forecast_item.get("input_values") or {}).get("pm10"),
+                                "co2": (forecast_item.get("input_values") or {}).get("co2"),
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(forecast_rows), use_container_width=True)
 
             except requests.exceptions.JSONDecodeError:
                 st.error("Eroare: Răspuns invalid de la API. Verifică dacă serverul rulează și dacă baza de date are date.")
