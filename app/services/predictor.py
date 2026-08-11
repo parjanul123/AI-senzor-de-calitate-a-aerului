@@ -39,6 +39,8 @@ MONTHLY_TEMPERATURE_RANGES = {
 LOCAL_TIMEZONE = "Europe/Bucharest"
 MAX_TEMPERATURE_CHANGE_PER_HOUR = 0.25
 MIN_CALENDAR_PROFILE_SAMPLES = 3
+DIURNAL_TEMPERATURE_AMPLITUDE = 3.0
+DIURNAL_TEMPERATURE_PEAK_HOUR = 16
 ZERO_WARNING_MIN_SAMPLES = 24
 ZERO_WARNING_RATIO_THRESHOLD = 0.6
 ZERO_WARNING_STREAK_THRESHOLD = 8
@@ -373,9 +375,19 @@ def _temperature_calendar_adjustment(
     forecast_hour = _to_local_timestamp(forecast_timestamp).hour
     current_baseline = hour_profile.get(current_hour)
     forecast_baseline = hour_profile.get(forecast_hour)
-    if current_baseline is None or forecast_baseline is None:
-        return 0.0
-    return float(forecast_baseline - current_baseline)
+    if current_baseline is not None and forecast_baseline is not None:
+        return float(forecast_baseline - current_baseline)
+
+    current_cycle_value = _temperature_diurnal_cycle_value(current_timestamp)
+    forecast_cycle_value = _temperature_diurnal_cycle_value(forecast_timestamp)
+    return float(forecast_cycle_value - current_cycle_value)
+
+
+def _temperature_diurnal_cycle_value(timestamp: pd.Timestamp) -> float:
+    """Estimate the local day-night temperature cycle when historical hourly coverage is incomplete."""
+    local_hour = _to_local_timestamp(timestamp).hour
+    phase = 2 * np.pi * (local_hour - DIURNAL_TEMPERATURE_PEAK_HOUR) / 24
+    return float(DIURNAL_TEMPERATURE_AMPLITUDE * np.cos(phase))
 
 
 def _compute_feature_slopes_per_hour(measurements: pd.DataFrame) -> dict[str, float]:

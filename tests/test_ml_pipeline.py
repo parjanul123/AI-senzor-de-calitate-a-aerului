@@ -485,6 +485,24 @@ def test_temperature_hour_profile_cools_evening_forecast():
     assert adjustment == -10.0
 
 
+def test_temperature_diurnal_fallback_cools_evening_and_warms_afternoon():
+    current_timestamp = pd.Timestamp("2026-08-04T17:00:00Z")  # 20:00 Romania
+
+    evening_adjustment = predictor_module._temperature_calendar_adjustment(
+        {},
+        current_timestamp,
+        pd.Timestamp("2026-08-04T19:00:00Z"),  # 22:00 Romania
+    )
+    afternoon_adjustment = predictor_module._temperature_calendar_adjustment(
+        {},
+        current_timestamp,
+        pd.Timestamp("2026-08-05T13:00:00Z"),  # 16:00 Romania
+    )
+
+    assert evening_adjustment < 0
+    assert afternoon_adjustment > 0
+
+
 def test_temperature_forecast_uses_romanian_local_month():
     # 21:00 UTC on August 31 is September 1 in Romania (UTC+3).
     forecast_timestamp = pd.Timestamp("2026-08-31T21:00:00Z")
