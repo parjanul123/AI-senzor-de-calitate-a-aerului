@@ -449,6 +449,35 @@ def test_build_forecast_returns_future_horizons(monkeypatch):
     assert all("feature_assessment" in item for item in forecast)
 
 
+def test_forecast_average_is_classified_from_future_values(monkeypatch):
+    class DummyModel:
+        def predict(self, input_df):
+            assert input_df.iloc[0]["temperature"] == 25.0
+            return ["moderate"]
+
+        def predict_proba(self, _input_df):
+            return [[0.3, 0.7]]
+
+    monkeypatch.setattr(predictor_module, "load_model", lambda *args, **kwargs: DummyModel())
+    average = predictor_module.summarize_forecast_average(
+        [
+            {
+                "horizon_hours": 1,
+                "input_values": {"temperature": 20.0, "humidity": 50.0, "pm25": 10.0, "pm10": 20.0, "co2": 600.0},
+            },
+            {
+                "horizon_hours": 2,
+                "input_values": {"temperature": 30.0, "humidity": 60.0, "pm25": 20.0, "pm10": 40.0, "co2": 800.0},
+            },
+        ]
+    )
+
+    assert average is not None
+    assert average["prediction"] == "moderate"
+    assert average["input_values"]["temperature"] == 25.0
+    assert average["hours_averaged"] == [1, 2]
+
+
 def test_august_temperature_forecast_limits_unrealistic_short_term_drop():
     forecast_timestamp = pd.Timestamp("2026-08-13T12:00:00Z")
 

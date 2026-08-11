@@ -551,6 +551,38 @@ def build_forecast(
     return forecast
 
 
+def summarize_forecast_average(forecast: list[dict[str, object]]) -> dict[str, object] | None:
+    """Classify the mean sensor values across all generated future forecast points."""
+    if not forecast:
+        return None
+
+    projected_rows = [item.get("input_values") for item in forecast]
+    projected_frame = pd.DataFrame([row for row in projected_rows if isinstance(row, dict)])
+    if projected_frame.empty:
+        return None
+
+    mean_values = {
+        feature_name: float(projected_frame[feature_name].mean())
+        for feature_name in FEATURE_ALIASES
+        if feature_name in projected_frame.columns
+    }
+    if set(mean_values) != set(FEATURE_ALIASES):
+        return None
+
+    model = load_model()
+    mean_frame = pd.DataFrame([mean_values])
+    prediction = model.predict(mean_frame)[0]
+    confidence = float(np.max(model.predict_proba(mean_frame)))
+
+    return {
+        "prediction": str(prediction),
+        "confidence": confidence,
+        "input_values": mean_values,
+        "feature_assessment": _build_feature_assessment(mean_values),
+        "hours_averaged": [item.get("horizon_hours") for item in forecast],
+    }
+
+
 def _build_hourly_average_features(hours_window: int) -> tuple[pd.DataFrame, dict[str, float]]:
     measurements = get_measurements(limit=5000, descending=True, raise_on_error=True)
     if measurements.empty:

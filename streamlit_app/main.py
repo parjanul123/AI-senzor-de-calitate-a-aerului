@@ -140,7 +140,9 @@ elif selected_page == "Predict":
                     query_parts.append(f"aggregation_hours={aggregation_hours}")
                 if future_hours > 0:
                     query_parts.append("include_forecast=true")
-                    query_parts.append(f"forecast_horizons={future_hours}")
+                    query_parts.append(
+                        f"forecast_horizons={','.join(str(hour) for hour in range(1, future_hours + 1))}"
+                    )
 
                 if query_parts:
                     request_url = f"{API_URL}?{'&'.join(query_parts)}"
@@ -176,6 +178,12 @@ elif selected_page == "Predict":
                         st.dataframe(pd.DataFrame(assessment_rows))
 
                 forecast = result.get("forecast") or []
+                forecast_average = result.get("forecast_average") or {}
+                if forecast_average:
+                    st.subheader("Media prognozei")
+                    st.write(f"Predicție medie: {forecast_average.get('prediction')}")
+                    st.write(f"Încredere: {forecast_average.get('confidence')}")
+                    st.json(forecast_average.get("input_values", {}))
                 if forecast:
                     st.subheader("Prognoza")
                     forecast_rows = []

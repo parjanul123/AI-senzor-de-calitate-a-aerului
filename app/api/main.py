@@ -18,7 +18,7 @@ from app.models.xgboost_model import train_and_save_xgboost
 from app.core.database import get_measurements
 from app.services.chatbot import get_chatbot_reply
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
-from app.services.predictor import build_forecast, predict_air_quality
+from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
 
 app = FastAPI(
     title="Air Quality AI API",
@@ -51,6 +51,7 @@ class PredictionResponse(BaseModel):
     feature_assessment: dict[str, Any] | None = None
     source_measurement: dict[str, Any] | None = None
     forecast: list[dict[str, Any]] | None = None
+    forecast_average: dict[str, Any] | None = None
 
 
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
@@ -164,6 +165,7 @@ def predict(
         raise HTTPException(status_code=500, detail=error_msg) from exc
 
     forecast_payload = None
+    forecast_average_payload = None
     if include_forecast:
         try:
             horizons = _parse_forecast_horizons(forecast_horizons)
@@ -179,6 +181,7 @@ def predict(
                 lookback_hours=resolved_lookback,
                 sensor_warning_map=sensor_warning_map,
             )
+            forecast_average_payload = summarize_forecast_average(forecast_payload)
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -197,6 +200,7 @@ def predict(
         feature_assessment=feature_assessment,
         source_measurement=feature_values,
         forecast=forecast_payload,
+        forecast_average=forecast_average_payload,
     )
 
     app.state.latest_prediction = response_payload.model_dump()
