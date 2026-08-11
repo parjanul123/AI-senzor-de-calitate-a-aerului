@@ -161,8 +161,9 @@ def _has_recent_sudden_zero_drop(values: list[float], recent_zero_streak: int) -
     return values[recent_zero_streak] > 0.0
 
 
-def _build_sensor_warning_map() -> dict[str, str]:
-    measurements = get_measurements(limit=ZERO_WARNING_LOOKBACK_ROWS, descending=True, raise_on_error=False)
+def _build_sensor_warning_map(measurements: pd.DataFrame | None = None) -> dict[str, str]:
+    if measurements is None:
+        measurements = get_measurements(limit=ZERO_WARNING_LOOKBACK_ROWS, descending=True, raise_on_error=False)
     if measurements.empty:
         return {}
 
@@ -194,6 +195,26 @@ def _build_sensor_warning_map() -> dict[str, str]:
             )
 
     return warning_map
+
+
+def _clean_unhealthy_sensor_values(
+    feature_values: dict[str, float],
+    sensor_warning_map: dict[str, str],
+    measurements: pd.DataFrame,
+) -> tuple[dict[str, float], set[str]]:
+    """Replace readings from a suspected stopped sensor with its valid historical median."""
+    cleaned_values = dict(feature_values)
+    excluded_features: set[str] = set()
+
+    for feature_name in sensor_warning_map:
+        values = _extract_numeric_column(measurements, feature_name).dropna()
+        valid_values = values[values != 0.0]
+        if valid_values.empty:
+            continue
+        cleaned_values[feature_name] = float(valid_values.median())
+        excluded_features.add(feature_name)
+
+    return cleaned_values, excluded_features
 
 
 def _detect_timestamp_column(dataframe: pd.DataFrame) -> str | None:
@@ -638,9 +659,26 @@ def predict_air_quality(use_hourly_average: bool = False, aggregation_hours: int
     else:
         input_df, feature_values = _load_latest_measurement_features()
 
+    sensor_history = get_measurements(
+        limit=ZERO_WARNING_LOOKBACK_ROWS,
+        descending=True,
+        raise_on_error=False,
+    )
+    sensor_warning_map = _build_sensor_warning_map(sensor_history)
+    if not sensor_history.empty:
+        feature_values, excluded_features = _clean_unhealthy_sensor_values(
+            feature_values,
+            sensor_warning_map,
+            sensor_history,
+        )
+        input_df = pd.DataFrame([feature_values])
+    else:
+        excluded_features = set()
+
     model = load_model()
     prediction = model.predict(input_df)[0]
     confidence = float(np.max(model.predict_proba(input_df)))
-    sensor_warning_map = _build_sensor_warning_map()
     feature_assessment = _build_feature_assessment(feature_values, sensor_warning_map=sensor_warning_map)
+    for feature_name in excluded_features:
+        feature_assessment[feature_name]["prediction_value_source"] = "valid_historical_median"
     return prediction, confidence, feature_values, feature_assessment

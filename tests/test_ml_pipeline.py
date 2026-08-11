@@ -415,6 +415,45 @@ def test_predict_air_quality_uses_latest_measurement(monkeypatch):
     assert feature_assessment["co2"]["condition"] == "poluat"
 
 
+def test_predict_air_quality_replaces_stopped_sensor_value_with_valid_history(monkeypatch):
+    rows = [
+        {
+            "temperature": 25.0,
+            "humidity": 50.0,
+            "pm25": 0.0,
+            "pm10": 20.0,
+            "co2": 700.0,
+        }
+        for _ in range(24)
+    ]
+    rows.append(
+        {
+            "temperature": 25.0,
+            "humidity": 50.0,
+            "pm25": 42.0,
+            "pm10": 20.0,
+            "co2": 700.0,
+        }
+    )
+    database_rows = pd.DataFrame(rows)
+
+    class DummyModel:
+        def predict(self, input_df):
+            assert input_df.iloc[0]["pm25"] == 42.0
+            return ["moderate"]
+
+        def predict_proba(self, _input_df):
+            return [[0.2, 0.8]]
+
+    monkeypatch.setattr(predictor_module, "get_measurements", lambda **kwargs: database_rows)
+    monkeypatch.setattr(predictor_module, "load_model", lambda *args, **kwargs: DummyModel())
+
+    _, _, feature_values, feature_assessment = predictor_module.predict_air_quality()
+
+    assert feature_values["pm25"] == 42.0
+    assert feature_assessment["pm25"]["prediction_value_source"] == "valid_historical_median"
+
+
 def test_build_forecast_returns_future_horizons(monkeypatch):
     database_rows = _sample_measurements_dataframe()
 
