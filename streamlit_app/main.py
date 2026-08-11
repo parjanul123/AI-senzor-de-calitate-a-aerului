@@ -130,14 +130,6 @@ elif selected_page == "Predict":
         use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
         aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
         future_hours = st.slider("Ore viitoare pentru prognoză", min_value=0, max_value=48, value=0)
-        forecast_history_days = 7
-        if future_hours > 0:
-            forecast_history_days = st.slider(
-                "Zile istorice folosite pentru prognoză",
-                min_value=1,
-                max_value=30,
-                value=7,
-            )
 
         if st.button("Generează predicție"):
             try:
@@ -149,7 +141,6 @@ elif selected_page == "Predict":
                 if future_hours > 0:
                     query_parts.append("include_forecast=true")
                     query_parts.append(f"forecast_horizons={future_hours}")
-                    query_parts.append(f"forecast_lookback_hours={forecast_history_days * 24}")
 
                 if query_parts:
                     request_url = f"{API_URL}?{'&'.join(query_parts)}"
