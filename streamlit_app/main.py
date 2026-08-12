@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from requests import HTTPError
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 SCRIPT_DIR_PATH = Path(__file__).resolve().parent
@@ -290,6 +291,20 @@ elif selected_page == "Train":
                 "isolation_forest": "🔍 Isolation Forest",
             }[x],
         )
+        allow_derived_label_fallback = st.checkbox(
+            "Permite fallback la etichete derivate (introduce data leakage)",
+            value=False,
+            help=(
+                "Lasă dezactivat pentru evaluare ML reală. Activează doar pentru demo când nu ai încă "
+                "minimum 10 etichete independente în baza de date."
+            ),
+        )
+        if allow_derived_label_fallback:
+            st.warning(
+                "Fallback-ul cu etichete derivate poate introduce data leakage. "
+                "Metricele clasice nu trebuie folosite ca rezultat final de performanță."
+            )
+
         training_granularity = st.selectbox(
             "Granularitate antrenare",
             options=["ore", "minute"],
@@ -322,6 +337,7 @@ elif selected_page == "Train":
                         "training_model": selected_model,
                         "aggregation_hours": training_aggregation_hours,
                         "aggregation_minutes": training_aggregation_minutes,
+                        "allow_derived_label_fallback": allow_derived_label_fallback,
                     },
                     timeout=90,
                 )
@@ -331,7 +347,25 @@ elif selected_page == "Train":
 
                 st.success("Antrenare finalizată")
                 st.write(result.get("message", ""))
-                
+                if result.get("warning"):
+                    st.warning(str(result.get("warning")))
+
+            except HTTPError as exc:
+                error_message = f"Eroare la antrenare: {exc}"
+                try:
+                    error_payload = exc.response.json() if exc.response is not None else {}
+                    detail = error_payload.get("detail")
+                    if detail:
+                        error_message = f"Eroare la antrenare: {detail}"
+                except (ValueError, TypeError, AttributeError):
+                    pass
+
+                st.error(error_message)
+                if ("quality_label" in error_message) or ("quality_label_source" in error_message):
+                    st.info(
+                        "Pentru un test rapid în UI poți activa checkbox-ul de fallback derivat, "
+                        "dar pentru evaluare ML reală trebuie etichete independente în baza de date."
+                    )
             except requests.RequestException as exc:
                 st.error(f"Eroare la antrenare: {exc}")
     else:  # Demo mode

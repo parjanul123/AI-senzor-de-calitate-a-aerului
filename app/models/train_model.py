@@ -332,7 +332,7 @@ def _find_label_source_column(dataframe: pd.DataFrame) -> str | None:
 def _build_supervised_labels_requirements_message(reason: str) -> str:
     return (
         f"{reason} "
-        "Pentru antrenare Random Forest/SVM fara data leakage, tabela 'measurements' trebuie sa includa: "
+        "Pentru antrenare Random Forest/SVM/XGBoost fara data leakage, tabela 'measurements' trebuie sa includa: "
         "(1) quality_label cu valori din {good, moderate, poor}; "
         "(2) quality_label_source cu valori independente de feature-urile modelului "
         "(ex: manual, expert_review, external_aqi_standard, lab_reference, independent_sensor_fusion)."

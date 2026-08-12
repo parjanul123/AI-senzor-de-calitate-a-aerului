@@ -10,7 +10,6 @@ from pathlib import Path
 
 from app.models.train_model import (
     train_and_save_isolation_forest,
-    train_and_save_model,
     train_and_save_random_forest,
     train_and_save_svm,
 )
@@ -89,6 +88,13 @@ class TrainRequest(BaseModel):
     training_model: str = "random_forest"
     aggregation_hours: int = Field(default=24, ge=1, le=720)
     aggregation_minutes: Optional[int] = Field(default=None, ge=1, le=60)
+    allow_derived_label_fallback: bool = Field(
+        default=False,
+        description=(
+            "Permite fallback la etichete derivate din feature-uri cand lipsesc etichete independente. "
+            "Activeaza doar pentru demo, deoarece introduce data leakage."
+        ),
+    )
 
 
 class AnomalyRequest(BaseModel):
@@ -311,7 +317,7 @@ def train_model(request: TrainRequest):
                 use_hourly_aggregation=True,
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
-                allow_derived_label_fallback=True,
+                allow_derived_label_fallback=request.allow_derived_label_fallback,
             )
             trained_model = "svm"
         elif request.training_model == "xgboost":
@@ -320,7 +326,7 @@ def train_model(request: TrainRequest):
                 use_hourly_aggregation=True,
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
-                allow_derived_label_fallback=True,
+                allow_derived_label_fallback=request.allow_derived_label_fallback,
             )
             trained_model = "xgboost"
         else:
@@ -329,7 +335,7 @@ def train_model(request: TrainRequest):
                 use_hourly_aggregation=True,
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
-                allow_derived_label_fallback=True,
+                allow_derived_label_fallback=request.allow_derived_label_fallback,
             )
             trained_model = "random_forest"
     except RuntimeError as exc:
@@ -353,7 +359,14 @@ def train_model(request: TrainRequest):
         "training_report": training_report,
         "dataset_name": request.dataset_name,
         "notes": request.notes,
+        "allow_derived_label_fallback": request.allow_derived_label_fallback,
     }
+
+    if request.allow_derived_label_fallback:
+        response_payload["warning"] = (
+            "Antrenarea permite fallback la etichete derivate din feature-uri. "
+            "Acest mod poate introduce data leakage si nu este potrivit pentru evaluare de performanta."
+        )
 
     app.state.latest_training = response_payload
     return response_payload

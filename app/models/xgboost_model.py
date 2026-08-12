@@ -18,7 +18,10 @@ from xgboost import XGBClassifier
 
 from app.core.config import MODELS_DIR, XGBOOST_MODEL_PATH
 from app.models.train_model import (
+    DATABASE_LABEL_SOURCE,
     LATEST_TRAINING_ROWS,
+    QUANTILE_LABEL_SOURCE,
+    SYNTHETIC_LABEL_SOURCE,
     TARGET_COLUMN,
     _build_dataset_info,
     _build_training_summary,
@@ -171,7 +174,8 @@ def load_xgboost_training_data(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
-) -> tuple[pd.DataFrame, pd.Series]:
+    return_metadata: bool = False,
+) -> tuple[pd.DataFrame, pd.Series] | tuple[pd.DataFrame, pd.Series, pd.DataFrame, dict[str, object]]:
     """Load labeled measurements through the existing shared training loader."""
     training_frame = _load_training_frame(
         use_hourly_aggregation=use_hourly_aggregation,
@@ -207,15 +211,27 @@ def load_xgboost_training_data(
     valid_rows = X.notna().all(axis=1)
     X = X.loc[valid_rows].copy()
     y = training_frame.loc[X.index, TARGET_COLUMN].copy()
+    filtered_training_frame = training_frame.loc[X.index].copy()
     if X.empty:
         raise RuntimeError("Nu există rânduri valide pentru antrenarea XGBoost.")
     if y.nunique() < 2:
         raise RuntimeError("XGBoost necesită cel puțin două clase pentru antrenare.")
-    return X, y
+
+    if not return_metadata:
+        return X, y
+
+    metadata = {
+        "label_source": str(training_frame.attrs.get("label_source", DATABASE_LABEL_SOURCE)),
+        "hourly_aggregation": bool(training_frame.attrs.get("hourly_aggregation", False)),
+        "aggregation_granularity": training_frame.attrs.get("aggregation_granularity"),
+        "aggregation_value": training_frame.attrs.get("aggregation_value"),
+        "effective_row_limit": training_frame.attrs.get("effective_row_limit"),
+        "source_rows_before_aggregation": training_frame.attrs.get("source_rows_before_aggregation"),
+    }
+    return X, y, filtered_training_frame, metadata
 
 
 def _evaluate_xgboost_model(
-    model: XGBoostModel,
     X: pd.DataFrame,
     y: pd.Series,
 ) -> dict | None:
@@ -306,12 +322,13 @@ def train_and_save_xgboost(
     target_path = Path(model_path) if model_path is not None else XGBOOST_MODEL_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    X, y = load_xgboost_training_data(
+    X, y, training_frame, metadata = load_xgboost_training_data(
         use_hourly_aggregation=use_hourly_aggregation,
         aggregation_hours=aggregation_hours,
         aggregation_minutes=aggregation_minutes,
         row_limit=row_limit,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        return_metadata=True,
     )
     model = XGBoostModel().fit(X, y)
     joblib.dump(model, target_path)
@@ -321,9 +338,10 @@ def train_and_save_xgboost(
     if not return_report:
         return model
 
-    # Build evaluation report
     evaluation = None
-    evaluation = _evaluate_xgboost_model(model, X, y)
+    label_source = str(metadata.get("label_source", DATABASE_LABEL_SOURCE))
+    if label_source == DATABASE_LABEL_SOURCE:
+        evaluation = _evaluate_xgboost_model(X, y)
 
     # Extract feature importance
     feature_importances = None
@@ -337,20 +355,17 @@ def train_and_save_xgboost(
     except (AttributeError, IndexError, TypeError):
         pass
 
-    # Build basic report info
-    from app.models.train_model import DATABASE_LABEL_SOURCE
-    label_source = DATABASE_LABEL_SOURCE
-    hourly_aggregation = use_hourly_aggregation
-    aggregation_granularity = None
-    aggregation_value = None
-    requested_rows = row_limit
+    hourly_aggregation = bool(metadata.get("hourly_aggregation", use_hourly_aggregation))
+    aggregation_granularity = metadata.get("aggregation_granularity")
+    aggregation_value = metadata.get("aggregation_value")
+    requested_rows = metadata.get("effective_row_limit")
+    source_rows_before_aggregation = metadata.get("source_rows_before_aggregation")
 
-    dataset_info = {
-        "total_measurements": len(X),
-        "time_range": {"start": None, "end": None},
-        "device_count": 0,
-        "class_distribution": dict(y.value_counts().to_dict()),
-    }
+    dataset_info = _build_dataset_info(
+        training_frame=training_frame,
+        labels=y,
+        include_class_distribution=True,
+    )
     model_info = {
         "name": "XGBoost Classifier",
         "n_estimators": int(model.classifier.n_estimators),
@@ -359,22 +374,30 @@ def train_and_save_xgboost(
     }
 
     evaluation_note = None
-    if evaluation is None:
+    if label_source in {SYNTHETIC_LABEL_SOURCE, QUANTILE_LABEL_SOURCE}:
+        evaluation_note = (
+            "Antrenarea a folosit etichete derivate din feature-uri (mod fallback). "
+            "Acest lucru introduce data leakage, deci metricele Accuracy/Precision/Recall/F1 "
+            "nu sunt relevante pentru performanța reală."
+        )
+    elif evaluation is None:
         evaluation_note = (
             "Metricile clasice nu au fost calculate deoarece setul etichetat independent "
             "este prea mic pentru o evaluare holdout stabilă."
         )
 
-    summary = {
-        "rows_requested": requested_rows,
-        "rows_used": len(X),
-        "label_source": label_source,
-        "hourly_aggregation": hourly_aggregation,
-        "aggregation_hours": aggregation_hours,
-        "aggregation_granularity": aggregation_granularity,
-        "aggregation_value": aggregation_value,
-        "class_distribution": dict(y.value_counts().to_dict()),
-    }
+    summary = _build_training_summary(
+        y,
+        label_source=label_source,
+        hourly_aggregation=hourly_aggregation,
+        aggregation_hours=aggregation_hours,
+        aggregation_granularity=aggregation_granularity,
+        aggregation_value=int(aggregation_value) if aggregation_value is not None else None,
+        row_limit=int(requested_rows) if requested_rows is not None else None,
+        source_rows_before_aggregation=(
+            int(source_rows_before_aggregation) if source_rows_before_aggregation is not None else None
+        ),
+    )
 
     report = {
         "model_type": "xgboost",
