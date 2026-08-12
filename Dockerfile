@@ -9,13 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install requirements
-COPY requirements.txt /app/requirements.txt
-RUN pip install --user --no-cache-dir -r /app/requirements.txt
+COPY requirements.api.txt /app/requirements.api.txt
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --user --no-cache-dir -r /app/requirements.api.txt
 
 # Runtime stage
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Runtime dependency needed by XGBoost wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy Python packages
 COPY --from=builder /root/.local /root/.local
