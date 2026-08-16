@@ -761,6 +761,16 @@ def train_and_save_random_forest(
     model, evolution = _train_random_forest_with_evolution(X, y)
     joblib.dump(model, target_path)
 
+    oob_scores = [step["oob_score"] for step in evolution if step["oob_score"] is not None]
+    final_oob_score = float(model.oob_score_) if hasattr(model, "oob_score_") and len(X) >= 10 else None
+    mean_oob_score = float(sum(oob_scores) / len(oob_scores)) if oob_scores else None
+    recommended_metric = {
+        "type": "oob_score_mean_score",
+        "label": "OOB Score + Mean Score",
+        "oob_score": final_oob_score,
+        "mean_score": mean_oob_score,
+    }
+
     dataset_info = _build_dataset_info(
         training_frame=training_frame,
         labels=y,
@@ -809,6 +819,7 @@ def train_and_save_random_forest(
         },
         "evaluation_note": evaluation_note,
         "evaluation": evaluation,
+        "recommended_metric": recommended_metric,
     }
 
     print(
@@ -891,7 +902,39 @@ def train_and_save_svm(
                 "Metricile clasice nu au fost calculate deoarece setul etichetat independent "
                 "este prea mic pentru o evaluare holdout stabilă."
             )
-        
+
+        svm_iterations = None
+        classifier_step = trained_model.named_steps.get("classifier")
+        raw_iterations = getattr(classifier_step, "n_iter_", None)
+        if raw_iterations is not None:
+            if hasattr(raw_iterations, "tolist"):
+                iteration_values = raw_iterations.tolist()
+                if isinstance(iteration_values, list):
+                    svm_iterations = int(sum(iteration_values))
+                else:
+                    svm_iterations = int(iteration_values)
+            else:
+                svm_iterations = int(raw_iterations)
+
+        if evaluation:
+            recommended_metric = {
+                "type": "accuracy_f1",
+                "label": "Accuracy + F1-score",
+                "accuracy": evaluation.get("accuracy"),
+                "f1_score": evaluation.get("f1_score"),
+            }
+        else:
+            # No holdout evaluation available (fallback labels or too few rows);
+            # report an in-sample training score so the UI still shows a number instead of N/A.
+            y_train_pred = trained_model.predict(X)
+            recommended_metric = {
+                "type": "accuracy_f1_training",
+                "label": "Accuracy + F1-score (pe setul de antrenare)",
+                "accuracy": float(accuracy_score(y, y_train_pred)),
+                "f1_score": float(f1_score(y, y_train_pred, average="weighted", zero_division=0)),
+                "iteration_count": svm_iterations,
+            }
+
         report = {
             "model_type": "svm",
             "dataset_info": dataset_info,
@@ -911,9 +954,42 @@ def train_and_save_svm(
             },
             "evaluation_note": evaluation_note,
             "evaluation": evaluation,
+            "recommended_metric": recommended_metric,
         }
         return trained_model, report
     return trained_model
+
+
+def _evaluate_isolation_forest_with_labels(
+    training_frame: pd.DataFrame,
+    predictions: pd.Series | pd.core.series.Series,
+) -> dict | None:
+    """Compute Precision/Recall against quality_label='poor' (independent source) as anomaly ground truth."""
+    label_source_column = _find_label_source_column(training_frame)
+    if TARGET_COLUMN not in training_frame.columns or label_source_column is None:
+        return None
+
+    db_labels = _coerce_existing_quality_labels(training_frame[TARGET_COLUMN])
+    source_values = training_frame[label_source_column].astype(str).str.strip().str.lower()
+    independent_mask = source_values.isin(INDEPENDENT_LABEL_SOURCES)
+    valid_mask = db_labels.notna() & independent_mask
+    valid_count = int(valid_mask.sum())
+    if valid_count < 10:
+        return None
+
+    ground_truth = db_labels.loc[valid_mask].eq("poor").astype(int)
+    if ground_truth.nunique() < 2:
+        return None
+
+    predicted_anomaly = pd.Series((predictions == -1).astype(int), index=training_frame.index).loc[valid_mask]
+
+    return {
+        "evaluated_rows": valid_count,
+        "precision": float(precision_score(ground_truth, predicted_anomaly, zero_division=0)),
+        "recall": float(recall_score(ground_truth, predicted_anomaly, zero_division=0)),
+        "f1_score": float(f1_score(ground_truth, predicted_anomaly, zero_division=0)),
+        "ground_truth_source": "quality_label='poor' (sursă independentă) tratat drept anomalie",
+    }
 
 
 def train_and_save_isolation_forest(
@@ -946,6 +1022,21 @@ def train_and_save_isolation_forest(
     normal_count = int(total_count - anomaly_count)
     anomaly_percentage = float((anomaly_count / total_count) * 100.0) if total_count > 0 else 0.0
 
+    label_based_evaluation = _evaluate_isolation_forest_with_labels(training_frame, predictions)
+    if label_based_evaluation:
+        recommended_metric = {
+            "type": "precision_recall",
+            "label": "Precision/Recall (anomalii)",
+            "precision": label_based_evaluation["precision"],
+            "recall": label_based_evaluation["recall"],
+        }
+    else:
+        recommended_metric = {
+            "type": "anomaly_count",
+            "label": "Număr de anomalii detectate",
+            "anomaly_count": anomaly_count,
+        }
+
     dataset_info = _build_dataset_info(
         training_frame=training_frame,
         labels=None,
@@ -967,6 +1058,7 @@ def train_and_save_isolation_forest(
             "normal": normal_count,
             "anomaly": anomaly_count,
         },
+        "label_evaluation": label_based_evaluation,
     }
     print(
         f"Trained IsolationForest on {len(X)} latest rows from Supabase measurements "
@@ -979,6 +1071,7 @@ def train_and_save_isolation_forest(
             "dataset_info": dataset_info,
             "model_info": model_info,
             "anomaly_summary": anomaly_summary,
+            "recommended_metric": recommended_metric,
             "summary": {
                 "rows_requested": int(row_limit) if not use_hourly_aggregation else None,
                 "rows_used": int(len(X)),

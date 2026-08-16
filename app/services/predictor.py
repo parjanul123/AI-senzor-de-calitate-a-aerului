@@ -39,6 +39,21 @@ MONTHLY_TEMPERATURE_RANGES = {
 LOCAL_TIMEZONE = "Europe/Bucharest"
 MAX_TEMPERATURE_CHANGE_PER_HOUR = 0.25
 MIN_CALENDAR_PROFILE_SAMPLES = 3
+
+# Maximum plausible total deviation a linear trend can contribute to a forecast,
+# regardless of how far out the horizon is. A short-term recent trend (e.g. humidity
+# dropping right now, or temperature ticking up in the last reading) should influence
+# near-term forecasts normally, but must not be extrapolated linearly forever
+# (e.g. humidity going from 40% to 0% in 48h, or temperature jumping +10-12C).
+# The trend contribution is passed through tanh() so it behaves linearly for small
+# horizon*slope products and smoothly saturates near this cap for larger ones.
+MAX_TREND_DEVIATION = {
+    "temperature": 4.0,
+    "humidity": 15.0,
+    "pm25": 30.0,
+    "pm10": 45.0,
+    "co2": 300.0,
+}
 DIURNAL_TEMPERATURE_AMPLITUDE = 3.0
 DIURNAL_TEMPERATURE_PEAK_HOUR = 16
 ZERO_WARNING_MIN_SAMPLES = 24
@@ -344,6 +359,20 @@ def _clamp_feature_value(feature_name: str, value: float) -> float:
     return float(max(0.0, value))
 
 
+def _saturate_trend_change(feature_name: str, slope_per_hour: float, horizon_hours: int) -> float:
+    """Bound how much a linear per-hour trend may shift a forecast as the horizon grows.
+
+    Uses tanh() so short horizons behave like plain linear extrapolation (slope * horizon),
+    while long horizons asymptotically approach MAX_TREND_DEVIATION instead of growing
+    without limit (avoids e.g. humidity trending from 40% to 0% over 48h).
+    """
+    raw_change = slope_per_hour * horizon_hours
+    max_deviation = MAX_TREND_DEVIATION.get(feature_name)
+    if not max_deviation:
+        return float(raw_change)
+    return float(max_deviation * np.tanh(raw_change / max_deviation))
+
+
 def _to_local_timestamp(timestamp: pd.Timestamp) -> pd.Timestamp:
     localized = pd.Timestamp(timestamp)
     if localized.tzinfo is None:
@@ -402,6 +431,133 @@ def _compute_temperature_hour_profile(measurements: pd.DataFrame) -> dict[int, f
         )
 
     return result
+
+
+def _compute_feature_hour_profile(measurements: pd.DataFrame, feature_name: str) -> dict[int, float]:
+    """Generic version of `_compute_temperature_hour_profile` for any feature.
+
+    Captures the natural daily oscillation (e.g. humidity typically higher at night,
+    lower midday) so long-horizon forecasts follow the observed up/down cycle instead
+    of drifting monotonically toward a single extrapolated value.
+    """
+    timestamp_column = _detect_timestamp_column(measurements)
+    if timestamp_column is None:
+        return {}
+
+    timestamps = pd.to_datetime(measurements[timestamp_column], errors="coerce", utc=True)
+    values = _extract_numeric_column(measurements, feature_name)
+    hourly = pd.DataFrame({"timestamp": timestamps, "value": values}).dropna()
+    if hourly.empty:
+        return {}
+
+    local_timestamps = hourly["timestamp"].dt.tz_convert(LOCAL_TIMEZONE)
+    hourly["local_hour"] = local_timestamps.dt.hour
+    hourly["local_date"] = local_timestamps.dt.date
+    profile = hourly.groupby("local_hour")["value"].agg(["mean", "count"])
+    profile = profile[profile["count"] >= MIN_CALENDAR_PROFILE_SAMPLES]
+    result = {int(hour): float(row["mean"]) for hour, row in profile.iterrows()}
+
+    latest_date = max(hourly["local_date"])
+    previous_date = latest_date - pd.Timedelta(days=1)
+    latest_day = hourly[hourly["local_date"] == latest_date]
+    previous_day = hourly[hourly["local_date"] == previous_date]
+    paired_hours = latest_day.merge(previous_day, on="local_hour", suffixes=("_latest", "_previous"))
+    for _, pair in paired_hours.iterrows():
+        result[int(pair["local_hour"])] = float((pair["value_latest"] + pair["value_previous"]) / 2)
+
+    return result
+
+
+def _feature_calendar_adjustment(
+    hour_profile: dict[int, float],
+    current_timestamp: pd.Timestamp,
+    forecast_timestamp: pd.Timestamp,
+) -> float:
+    """Generic version of `_temperature_calendar_adjustment`; returns 0 when there is no daily profile."""
+    current_hour = _to_local_timestamp(current_timestamp).hour
+    forecast_hour = _to_local_timestamp(forecast_timestamp).hour
+    current_baseline = hour_profile.get(current_hour)
+    forecast_baseline = hour_profile.get(forecast_hour)
+    if current_baseline is not None and forecast_baseline is not None:
+        return float(forecast_baseline - current_baseline)
+    return 0.0
+
+
+def _compute_feature_historical_range(
+    measurements: pd.DataFrame,
+    feature_name: str,
+) -> tuple[float, float] | None:
+    """Return a (low, high) safety band from recent observed values (5th-95th percentile, with margin).
+
+    Used as a final guardrail so long-horizon forecasts stay within the range the sensor has
+    actually shown recently, oscillating between it instead of drifting past it.
+    """
+    values = _extract_numeric_column(measurements, feature_name).dropna()
+    if len(values) < MIN_CALENDAR_PROFILE_SAMPLES:
+        return None
+
+    low = float(values.quantile(0.05))
+    high = float(values.quantile(0.95))
+    if high <= low:
+        return None
+
+    margin = (high - low) * 0.15
+    return (low - margin, high + margin)
+
+
+def _compute_feature_stats(
+    measurements: pd.DataFrame,
+    feature_name: str,
+) -> tuple[float, float, float] | None:
+    """Return (low, mean, high) from recent observed values (5th/95th percentile + mean)."""
+    values = _extract_numeric_column(measurements, feature_name).dropna()
+    if len(values) < MIN_CALENDAR_PROFILE_SAMPLES:
+        return None
+
+    low = float(values.quantile(0.05))
+    high = float(values.quantile(0.95))
+    mean = float(values.mean())
+    if high <= low:
+        return None
+
+    return (low, mean, high)
+
+
+def _oscillate_forecast_value(
+    current_value: float,
+    stats: tuple[float, float, float] | None,
+    trend_change: float,
+    horizon_hours: int,
+    period_hours: float = 24.0,
+) -> float:
+    """Blend a short-term trend nudge with a smooth wave between the observed min/mean/max.
+
+    Long, flat horizons should not just repeat the same near-constant value (a recent trend
+    that has already saturated) — they should keep cycling naturally, the way real sensor
+    readings do, passing through the historical minimum, average and maximum over time.
+    Near-term horizons stay close to `current_value + trend_change` (continuity, no jump);
+    the wave takes over gradually as the horizon grows past one full period.
+    """
+    near_term_value = current_value + trend_change
+    if stats is None:
+        return near_term_value
+
+    low, mean, high = stats
+    amplitude = (high - low) / 2.0
+    if amplitude <= 0:
+        return near_term_value
+
+    # Anchor the wave so it passes through the current (near-term) value right now.
+    ratio = max(-1.0, min(1.0, (near_term_value - mean) / amplitude))
+    phase0 = float(np.arccos(ratio))
+    # The trend direction tells us whether the value is currently heading up or down.
+    direction = -1.0 if trend_change >= 0 else 1.0
+    angular_speed = 2 * np.pi / period_hours
+    phase = phase0 + direction * angular_speed * horizon_hours
+    oscillated = mean + amplitude * np.cos(phase)
+
+    blend_weight = min(1.0, horizon_hours / period_hours)
+    return float((1.0 - blend_weight) * near_term_value + blend_weight * oscillated)
 
 
 def _temperature_calendar_adjustment(
@@ -519,6 +675,15 @@ def build_forecast(
     slopes = _compute_feature_slopes_per_hour(frame)
     temperature_hour_profile = _compute_temperature_hour_profile(frame)
     previous_hour_temperature = _previous_hour_temperature_average(frame, latest_timestamp)
+    non_temperature_features = [name for name in FEATURE_ALIASES if name != "temperature"]
+    feature_historical_ranges = {
+        feature_name: _compute_feature_historical_range(frame, feature_name)
+        for feature_name in non_temperature_features
+    }
+    feature_stats = {
+        feature_name: _compute_feature_stats(frame, feature_name)
+        for feature_name in FEATURE_ALIASES
+    }
     sensor_warning_map = sensor_warning_map or _build_sensor_warning_map()
     model = load_model()
     forecast: list[dict[str, object]] = []
@@ -533,20 +698,38 @@ def build_forecast(
         )
         for feature_name, current_value in base_feature_values.items():
             slope_per_hour = slopes.get(feature_name, 0.0)
-            projected_raw = float(current_value) + (slope_per_hour * horizon)
+            trend_change = _saturate_trend_change(feature_name, slope_per_hour, horizon)
             if feature_name == "temperature":
                 smoothed_temperature = float(current_value)
                 if previous_hour_temperature is not None:
                     smoothed_temperature = (float(current_value) + previous_hour_temperature) / 2
-                projected_raw = smoothed_temperature + (slope_per_hour * horizon)
+                oscillated = _oscillate_forecast_value(
+                    smoothed_temperature,
+                    feature_stats.get("temperature"),
+                    trend_change + temperature_calendar_adjustment,
+                    horizon,
+                )
                 projected_features[feature_name] = _clamp_forecast_temperature(
-                    projected_raw + temperature_calendar_adjustment,
+                    oscillated,
                     current_value=smoothed_temperature,
                     forecast_timestamp=forecast_timestamp,
                     horizon_hours=horizon,
                 )
             else:
-                projected_features[feature_name] = _clamp_feature_value(feature_name, projected_raw)
+                # Oscillate between the observed min/mean/max instead of drifting
+                # monotonically (or flattening to a single repeated value) over long horizons.
+                oscillated = _oscillate_forecast_value(
+                    float(current_value),
+                    feature_stats.get(feature_name),
+                    trend_change,
+                    horizon,
+                )
+                clamped = _clamp_feature_value(feature_name, oscillated)
+                historical_range = feature_historical_ranges.get(feature_name)
+                if historical_range is not None:
+                    low, high = historical_range
+                    clamped = float(min(high, max(low, clamped)))
+                projected_features[feature_name] = clamped
 
         projected_df = pd.DataFrame([projected_features])
         projected_prediction = model.predict(projected_df)[0]

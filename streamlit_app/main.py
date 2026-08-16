@@ -272,6 +272,215 @@ elif selected_page == "Train":
             return str(value)
         return parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    def _render_training_report(result, default_aggregation_hours=24):
+        training_report = result.get("training_report", {})
+        dataset_info = training_report.get("dataset_info", {})
+        model_info = training_report.get("model_info", {})
+        evaluation = training_report.get("evaluation")
+        evaluation_note = training_report.get("evaluation_note")
+        anomaly_summary = training_report.get("anomaly_summary", {})
+        technical_details = training_report.get("technical_details", {})
+        summary = training_report.get("summary", {})
+
+        st.subheader("1) Setul de date utilizat")
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            st.metric("Dispozitive sursă", int(dataset_info.get("device_count", 0)))
+        with d_col2:
+            agg_granularity = summary.get("aggregation_granularity")
+            agg_value = summary.get("aggregation_value")
+            if agg_granularity == "minute" and agg_value is not None:
+                st.metric("Agregare", f"{int(agg_value)} minute")
+            else:
+                st.metric("Agregare", f"{int(summary.get('aggregation_hours', default_aggregation_hours))} ore")
+
+        time_range = dataset_info.get("time_range", {})
+        st.write(
+            "Interval temporal: "
+            f"{_fmt_ts(time_range.get('start'))}  ->  {_fmt_ts(time_range.get('end'))}"
+        )
+
+        class_distribution = dataset_info.get("class_distribution")
+        if class_distribution:
+            st.markdown("**Distribuția claselor (good / moderate / poor)**")
+            class_df = pd.DataFrame(
+                [{"class": key, "count": int(value)} for key, value in class_distribution.items()]
+            )
+            st.dataframe(class_df, use_container_width=True)
+
+        st.subheader("2) Informații despre model")
+        m_col1, m_col2, m_col3 = st.columns(3)
+        with m_col1:
+            st.metric("Model", model_info.get("name", result.get("model_type", "N/A")))
+        with m_col2:
+            n_estimators = model_info.get("n_estimators")
+            st.metric("Număr arbori", n_estimators if n_estimators is not None else "N/A")
+        with m_col3:
+            st.metric("Ultima antrenare", _fmt_ts(model_info.get("last_trained_at")))
+
+        model_path = model_info.get("model_path")
+        if model_path:
+            st.write(f"Fișier model (.pkl): {model_path}")
+
+        st.subheader("3) Evaluarea modelului")
+        label_source = summary.get("label_source")
+        model_type = result.get("model_type")
+
+        # Metrica recomandată per algoritm
+        recommended_metric = training_report.get("recommended_metric")
+        if recommended_metric:
+            st.markdown(f"**Metrică recomandată: {recommended_metric.get('label', '')}**")
+            metric_type = recommended_metric.get("type")
+            if metric_type == "oob_score_mean_score":
+                rm_col1, rm_col2 = st.columns(2)
+                oob_value = recommended_metric.get("oob_score")
+                mean_value = recommended_metric.get("mean_score")
+                with rm_col1:
+                    st.metric("OOB Score", f"{oob_value:.4f}" if oob_value is not None else "N/A")
+                with rm_col2:
+                    st.metric("Mean Score", f"{mean_value:.4f}" if mean_value is not None else "N/A")
+            elif metric_type == "f1_score":
+                f1_value = recommended_metric.get("f1_score")
+                st.metric("F1-score", f"{f1_value:.4f}" if f1_value is not None else "N/A")
+            elif metric_type == "f1_score_training":
+                f1_value = recommended_metric.get("f1_score")
+                st.metric("F1-score (antrenare)", f"{f1_value:.4f}" if f1_value is not None else "N/A")
+                st.caption("Scor calculat pe setul de antrenare (fără holdout independent) — posibil optimist.")
+            elif metric_type == "accuracy_f1":
+                rm_col1, rm_col2 = st.columns(2)
+                accuracy_value = recommended_metric.get("accuracy")
+                f1_value = recommended_metric.get("f1_score")
+                with rm_col1:
+                    st.metric("Accuracy", f"{accuracy_value:.4f}" if accuracy_value is not None else "N/A")
+                with rm_col2:
+                    st.metric("F1-score", f"{f1_value:.4f}" if f1_value is not None else "N/A")
+            elif metric_type == "accuracy_f1_training":
+                rm_col1, rm_col2 = st.columns(2)
+                accuracy_value = recommended_metric.get("accuracy")
+                f1_value = recommended_metric.get("f1_score")
+                with rm_col1:
+                    st.metric("Accuracy (antrenare)", f"{accuracy_value:.4f}" if accuracy_value is not None else "N/A")
+                with rm_col2:
+                    st.metric("F1-score (antrenare)", f"{f1_value:.4f}" if f1_value is not None else "N/A")
+                st.caption("Scor calculat pe setul de antrenare (fără holdout independent) — posibil optimist.")
+            elif metric_type == "precision_recall":
+                rm_col1, rm_col2 = st.columns(2)
+                with rm_col1:
+                    st.metric("Precision", f"{recommended_metric.get('precision', 0.0):.4f}")
+                with rm_col2:
+                    st.metric("Recall", f"{recommended_metric.get('recall', 0.0):.4f}")
+            elif metric_type == "anomaly_count":
+                st.metric("Anomalii detectate", int(recommended_metric.get("anomaly_count", 0)))
+            elif metric_type == "iteration_count":
+                iteration_count = recommended_metric.get("iteration_count")
+                st.metric("Număr iterații", int(iteration_count) if iteration_count is not None else "N/A")
+        else:
+            st.caption("Nu există o metrică recomandată pentru această sesiune de antrenare.")
+
+        # Display evaluation metrics for all supervised models
+        if model_type in ["random_forest", "xgboost", "svm"]:
+            if label_source == "database_quality_label" and evaluation:
+                # Performance metrics
+                e_col1, e_col2, e_col3, e_col4 = st.columns(4)
+                with e_col1:
+                    st.metric("Accuracy", f"{evaluation.get('accuracy', 0.0):.4f}")
+                with e_col2:
+                    st.metric("Precision", f"{evaluation.get('precision', 0.0):.4f}")
+                with e_col3:
+                    st.metric("Recall", f"{evaluation.get('recall', 0.0):.4f}")
+                with e_col4:
+                    st.metric("F1-score", f"{evaluation.get('f1_score', 0.0):.4f}")
+
+                # Confusion Matrix
+                confusion_matrix_data = evaluation.get("confusion_matrix", {})
+                labels_list = confusion_matrix_data.get("labels", [])
+                matrix = confusion_matrix_data.get("matrix", [])
+                if labels_list and matrix:
+                    st.markdown("**Confusion Matrix**")
+                    cm_df = pd.DataFrame(matrix, index=labels_list, columns=labels_list)
+                    st.dataframe(cm_df, use_container_width=True)
+
+                # Classification Report
+                classification_report_data = evaluation.get("classification_report", {})
+                if classification_report_data:
+                    with st.expander("Classification Report (Detaliat)", expanded=False):
+                        report_rows = []
+                        for class_label, metrics in classification_report_data.items():
+                            if isinstance(metrics, dict) and "precision" in metrics:
+                                report_rows.append({
+                                    "class": class_label,
+                                    "precision": f"{metrics.get('precision', 0.0):.4f}",
+                                    "recall": f"{metrics.get('recall', 0.0):.4f}",
+                                    "f1-score": f"{metrics.get('f1-score', 0.0):.4f}",
+                                    "support": int(metrics.get('support', 0)),
+                                })
+                        if report_rows:
+                            st.dataframe(pd.DataFrame(report_rows), use_container_width=True)
+            else:
+                explanation = evaluation_note or (
+                    "Metricile clasice nu sunt disponibile pentru această sesiune de antrenare."
+                )
+                st.info(explanation)
+
+        # Feature Importance (for models that support it)
+        if model_type in ["random_forest", "xgboost"]:
+            feature_importances = technical_details.get("feature_importances", {})
+            if feature_importances:
+                st.markdown("**Feature Importance**")
+                importance_df = pd.DataFrame([
+                    {"Feature": k, "Importance": float(v)}
+                    for k, v in sorted(feature_importances.items(), key=lambda x: x[1], reverse=True)
+                ])
+                st.bar_chart(importance_df.set_index("Feature"))
+                with st.expander("Valori Feature Importance", expanded=False):
+                    st.dataframe(importance_df, use_container_width=True)
+
+        if model_type == "isolation_forest":
+            st.subheader("4) Rezultate Isolation Forest")
+            a_col1, a_col2, a_col3 = st.columns(3)
+            with a_col1:
+                st.metric("Anomalii detectate", int(anomaly_summary.get("anomaly_count", 0)))
+            with a_col2:
+                st.metric("Procent anomalii", f"{anomaly_summary.get('anomaly_percentage', 0.0):.2f}%")
+            with a_col3:
+                st.metric("Contamination", anomaly_summary.get("contamination", "N/A"))
+
+            distribution = anomaly_summary.get("distribution", {})
+            if distribution:
+                dist_df = pd.DataFrame(
+                    {
+                        "category": ["normal", "anomaly"],
+                        "count": [
+                            int(distribution.get("normal", 0)),
+                            int(distribution.get("anomaly", 0)),
+                        ],
+                    }
+                )
+                st.markdown("**Distribuția anomaliilor**")
+                st.bar_chart(dist_df.set_index("category"))
+
+        with st.expander("Detalii tehnice", expanded=False):
+            evolution = technical_details.get("evolution", [])
+            if evolution:
+                evolution_df = pd.DataFrame(evolution)
+                st.dataframe(evolution_df, use_container_width=True)
+                if "oob_score" in evolution_df.columns:
+                    oob_series = pd.to_numeric(evolution_df["oob_score"], errors="coerce")
+                    if oob_series.notna().any():
+                        st.line_chart(pd.DataFrame({"oob_score": oob_series}).set_index(evolution_df["step"]))
+                    else:
+                        rows_used = int(summary.get("rows_used", 0) or 0)
+                        st.info(
+                            "OOB score nu este disponibil pentru acest training. "
+                            f"Setul curent are {rows_used} rânduri agregate; recomand cel puțin 10 pentru o estimare stabilă."
+                        )
+                elif "mean_decision_score" in evolution_df.columns:
+                    st.line_chart(evolution_df.set_index("step")["mean_decision_score"])
+            elif model_type == "xgboost" and model_info.get("n_estimators") is not None:
+                st.metric("Număr iterații (boosting rounds)", int(model_info.get("n_estimators")))
+            else:
+                st.caption("Nu există detalii tehnice suplimentare pentru această antrenare.")
+
     # Training mode selector
     training_mode = st.radio(
         "Selectează modul de antrenare:",
@@ -350,6 +559,9 @@ elif selected_page == "Train":
                 if result.get("warning"):
                     st.warning(str(result.get("warning")))
 
+                if result.get("training_report"):
+                    _render_training_report(result, default_aggregation_hours=training_aggregation_hours)
+
             except HTTPError as exc:
                 error_message = f"Eroare la antrenare: {exc}"
                 try:
@@ -380,162 +592,9 @@ elif selected_page == "Train":
 
                 st.success("Antrenare DEMO finalizată")
                 st.write(result.get("message", ""))
-                
-                training_report = result.get("training_report", {})
-                dataset_info = training_report.get("dataset_info", {})
-                model_info = training_report.get("model_info", {})
-                evaluation = training_report.get("evaluation")
-                evaluation_note = training_report.get("evaluation_note")
-                anomaly_summary = training_report.get("anomaly_summary", {})
-                technical_details = training_report.get("technical_details", {})
-                summary = training_report.get("summary", {})
 
-                st.subheader("1) Setul de date utilizat")
-                d_col1, d_col2 = st.columns(2)
-                with d_col1:
-                    st.metric("Dispozitive sursă", int(dataset_info.get("device_count", 0)))
-                with d_col2:
-                    agg_granularity = summary.get("aggregation_granularity")
-                    agg_value = summary.get("aggregation_value")
-                    if agg_granularity == "minute" and agg_value is not None:
-                        st.metric("Agregare", f"{int(agg_value)} minute")
-                    else:
-                        st.metric("Agregare", f"{int(summary.get('aggregation_hours', training_aggregation_hours))} ore")
+                _render_training_report(result, default_aggregation_hours=24)
 
-                time_range = dataset_info.get("time_range", {})
-                st.write(
-                    "Interval temporal: "
-                    f"{_fmt_ts(time_range.get('start'))}  ->  {_fmt_ts(time_range.get('end'))}"
-                )
-
-                class_distribution = dataset_info.get("class_distribution")
-                if class_distribution:
-                    st.markdown("**Distribuția claselor (good / moderate / poor)**")
-                    class_df = pd.DataFrame(
-                        [{"class": key, "count": int(value)} for key, value in class_distribution.items()]
-                    )
-                    st.dataframe(class_df, use_container_width=True)
-
-                st.subheader("2) Informații despre model")
-                m_col1, m_col2, m_col3 = st.columns(3)
-                with m_col1:
-                    st.metric("Model", model_info.get("name", result.get("model_type", "N/A")))
-                with m_col2:
-                    n_estimators = model_info.get("n_estimators")
-                    st.metric("Număr arbori", n_estimators if n_estimators is not None else "N/A")
-                with m_col3:
-                    st.metric("Ultima antrenare", _fmt_ts(model_info.get("last_trained_at")))
-
-                model_path = model_info.get("model_path")
-                if model_path:
-                    st.write(f"Fișier model (.pkl): {model_path}")
-
-                st.subheader("3) Evaluarea modelului")
-                label_source = summary.get("label_source")
-                model_type = result.get("model_type")
-                
-                # Display evaluation metrics for all supervised models
-                if model_type in ["random_forest", "xgboost", "svm"]:
-                    if label_source == "database_quality_label" and evaluation:
-                        # Performance metrics
-                        e_col1, e_col2, e_col3, e_col4 = st.columns(4)
-                        with e_col1:
-                            st.metric("Accuracy", f"{evaluation.get('accuracy', 0.0):.4f}")
-                        with e_col2:
-                            st.metric("Precision", f"{evaluation.get('precision', 0.0):.4f}")
-                        with e_col3:
-                            st.metric("Recall", f"{evaluation.get('recall', 0.0):.4f}")
-                        with e_col4:
-                            st.metric("F1-score", f"{evaluation.get('f1_score', 0.0):.4f}")
-
-                        # Confusion Matrix
-                        confusion_matrix_data = evaluation.get("confusion_matrix", {})
-                        labels_list = confusion_matrix_data.get("labels", [])
-                        matrix = confusion_matrix_data.get("matrix", [])
-                        if labels_list and matrix:
-                            st.markdown("**Confusion Matrix**")
-                            cm_df = pd.DataFrame(matrix, index=labels_list, columns=labels_list)
-                            st.dataframe(cm_df, use_container_width=True)
-                        
-                        # Classification Report
-                        classification_report_data = evaluation.get("classification_report", {})
-                        if classification_report_data:
-                            with st.expander("Classification Report (Detaliat)", expanded=False):
-                                report_rows = []
-                                for class_label, metrics in classification_report_data.items():
-                                    if isinstance(metrics, dict) and "precision" in metrics:
-                                        report_rows.append({
-                                            "class": class_label,
-                                            "precision": f"{metrics.get('precision', 0.0):.4f}",
-                                            "recall": f"{metrics.get('recall', 0.0):.4f}",
-                                            "f1-score": f"{metrics.get('f1-score', 0.0):.4f}",
-                                            "support": int(metrics.get('support', 0)),
-                                        })
-                                if report_rows:
-                                    st.dataframe(pd.DataFrame(report_rows), use_container_width=True)
-                    else:
-                        explanation = evaluation_note or (
-                            "Metricile clasice nu sunt disponibile pentru această sesiune de antrenare."
-                        )
-                        st.info(explanation)
-
-                # Feature Importance (for models that support it)
-                if model_type in ["random_forest", "xgboost"]:
-                    feature_importances = technical_details.get("feature_importances", {})
-                    if feature_importances:
-                        st.markdown("**Feature Importance**")
-                        importance_df = pd.DataFrame([
-                            {"Feature": k, "Importance": float(v)}
-                            for k, v in sorted(feature_importances.items(), key=lambda x: x[1], reverse=True)
-                        ])
-                        st.bar_chart(importance_df.set_index("Feature"))
-                        with st.expander("Valori Feature Importance", expanded=False):
-                            st.dataframe(importance_df, use_container_width=True)
-
-                if result.get("model_type") == "isolation_forest":
-                    st.subheader("4) Rezultate Isolation Forest")
-                    a_col1, a_col2, a_col3 = st.columns(3)
-                    with a_col1:
-                        st.metric("Anomalii detectate", int(anomaly_summary.get("anomaly_count", 0)))
-                    with a_col2:
-                        st.metric("Procent anomalii", f"{anomaly_summary.get('anomaly_percentage', 0.0):.2f}%")
-                    with a_col3:
-                        st.metric("Contamination", anomaly_summary.get("contamination", "N/A"))
-
-                    distribution = anomaly_summary.get("distribution", {})
-                    if distribution:
-                        dist_df = pd.DataFrame(
-                            {
-                                "category": ["normal", "anomaly"],
-                                "count": [
-                                    int(distribution.get("normal", 0)),
-                                    int(distribution.get("anomaly", 0)),
-                                ],
-                            }
-                        )
-                        st.markdown("**Distribuția anomaliilor**")
-                        st.bar_chart(dist_df.set_index("category"))
-
-                with st.expander("Detalii tehnice", expanded=False):
-                    evolution = technical_details.get("evolution", [])
-                    if evolution:
-                        evolution_df = pd.DataFrame(evolution)
-                        st.dataframe(evolution_df, use_container_width=True)
-                        if "oob_score" in evolution_df.columns:
-                            oob_series = pd.to_numeric(evolution_df["oob_score"], errors="coerce")
-                            if oob_series.notna().any():
-                                st.line_chart(pd.DataFrame({"oob_score": oob_series}).set_index(evolution_df["step"]))
-                            else:
-                                rows_used = int(summary.get("rows_used", 0) or 0)
-                                st.info(
-                                    "OOB score nu este disponibil pentru acest training. "
-                                    f"Setul curent are {rows_used} rânduri agregate; recomand cel puțin 10 pentru o estimare stabilă."
-                                )
-                        elif "mean_decision_score" in evolution_df.columns:
-                            st.line_chart(evolution_df.set_index("step")["mean_decision_score"])
-                    else:
-                        st.caption("Nu există detalii tehnice suplimentare pentru această antrenare.")
-                
             except requests.RequestException as exc:
                 st.error(f"Eroare la antrenare demo: {exc}")
 
@@ -543,6 +602,7 @@ elif selected_page == "Train":
     if latest_training_result:
         latest_training_report = latest_training_result.get("training_report", {})
         latest_model_info = latest_training_report.get("model_info", {})
+        latest_model_type = latest_training_result.get("model_type")
         latest_evolution = latest_training_report.get("technical_details", {}).get("evolution", [])
         if latest_evolution:
             st.subheader("Evoluția antrenării")
@@ -561,6 +621,9 @@ elif selected_page == "Train":
                     )
             elif "mean_decision_score" in latest_evolution_df.columns:
                 st.line_chart(latest_evolution_df.set_index("step")["mean_decision_score"])
+        elif latest_model_type == "xgboost" and latest_model_info.get("n_estimators") is not None:
+            st.subheader("Evoluția antrenării")
+            st.metric("Număr iterații (boosting rounds)", int(latest_model_info.get("n_estimators")))
 
         with st.expander("Ultimul raport de antrenare", expanded=training_mode == "Real (Supabase)"):
             st.json(latest_training_report or latest_training_result)

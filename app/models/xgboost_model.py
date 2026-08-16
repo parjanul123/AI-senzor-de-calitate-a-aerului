@@ -386,6 +386,23 @@ def train_and_save_xgboost(
             "este prea mic pentru o evaluare holdout stabilă."
         )
 
+    if evaluation:
+        recommended_metric = {
+            "type": "f1_score",
+            "label": "F1-score",
+            "f1_score": evaluation.get("f1_score"),
+        }
+    else:
+        # No holdout evaluation available (fallback labels or too few rows);
+        # report an in-sample training score so the UI still shows a number instead of N/A.
+        y_train_pred = model.predict(X)
+        recommended_metric = {
+            "type": "f1_score_training",
+            "label": "F1-score (pe setul de antrenare)",
+            "f1_score": float(f1_score(y, y_train_pred, average="weighted", zero_division=0)),
+            "iteration_count": int(model.classifier.n_estimators),
+        }
+
     summary = _build_training_summary(
         y,
         label_source=label_source,
@@ -409,6 +426,7 @@ def train_and_save_xgboost(
         },
         "evaluation_note": evaluation_note,
         "evaluation": evaluation,
+        "recommended_metric": recommended_metric,
     }
 
     return model, report
