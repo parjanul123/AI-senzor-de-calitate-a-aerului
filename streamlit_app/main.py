@@ -582,16 +582,37 @@ elif selected_page == "Train":
                 st.error(f"Eroare la antrenare: {exc}")
     else:  # Demo mode
         st.info("Antrenare DEMO cu Random Forest pe date din Supabase (24h agregare)")
-        
+        demo_allow_derived_label_fallback = st.checkbox(
+            "Permite fallback la etichete derivate (introduce data leakage)",
+            value=True,
+            key="demo_allow_derived_label_fallback",
+            help=(
+                "Implicit activat pentru ca DEMO să funcționeze fără etichete independente. "
+                "Dezactivează pentru a testa doar cu etichete reale din baza de date "
+                "(poate eșua dacă nu există suficiente)."
+            ),
+        )
+        if demo_allow_derived_label_fallback:
+            st.warning(
+                "Fallback-ul cu etichete derivate poate introduce data leakage. "
+                "Metricele clasice nu trebuie folosite ca rezultat final de performanță."
+            )
+
         if st.button("Antrenează modelul DEMO", type="primary"):
             try:
-                response = requests.post(TRAIN_DEMO_API_URL, timeout=90)
+                response = requests.post(
+                    TRAIN_DEMO_API_URL,
+                    params={"allow_derived_label_fallback": demo_allow_derived_label_fallback},
+                    timeout=90,
+                )
                 response.raise_for_status()
                 result = response.json()
                 st.session_state.latest_training_result = result
 
                 st.success("Antrenare DEMO finalizată")
                 st.write(result.get("message", ""))
+                if result.get("warning"):
+                    st.warning(str(result.get("warning")))
 
                 _render_training_report(result, default_aggregation_hours=24)
 

@@ -373,8 +373,12 @@ def train_model(request: TrainRequest):
 
 
 @app.post("/train-demo")
-def train_demo():
-    """Antrenare demo cu date de test - util pentru testing."""
+def train_demo(allow_derived_label_fallback: bool = Query(default=True)):
+    """Antrenare demo cu date de test - util pentru testing.
+
+    `allow_derived_label_fallback` implicit True (comportament demo istoric), dar poate fi
+    dezactivat explicit din UI pentru a nu introduce data leakage.
+    """
     try:
         # Antrenează modelul cu datele disponibile din bază
         _, training_report = train_and_save_random_forest(
@@ -382,7 +386,7 @@ def train_demo():
             use_hourly_aggregation=True,
             aggregation_hours=24,
             aggregation_minutes=None,
-            allow_derived_label_fallback=True,
+            allow_derived_label_fallback=allow_derived_label_fallback,
         )
         
         response_payload = {
@@ -392,8 +396,15 @@ def train_demo():
             "training_report": training_report,
             "dataset_name": "demo-24h",
             "notes": "Antrenare demo - folosit pentru testing",
+            "allow_derived_label_fallback": allow_derived_label_fallback,
         }
-        
+
+        if allow_derived_label_fallback:
+            response_payload["warning"] = (
+                "Antrenarea permite fallback la etichete derivate din feature-uri. "
+                "Acest mod poate introduce data leakage si nu este potrivit pentru evaluare de performanta."
+            )
+
         app.state.latest_training = response_payload
         return response_payload
     except Exception as exc:
