@@ -54,6 +54,23 @@ def test_chatbot_reads_requested_dust_and_air_values_from_database(monkeypatch):
     assert "PM2.5" not in reply
 
 
+def test_chatbot_uses_bert_sensor_intent_for_paraphrased_question(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"pm10": 31.2}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.detect_sensor_features",
+        lambda message: ["pm10"],
+    )
+
+    reply = get_chatbot_reply("Cât de încărcat este aerul cu particule acum?")
+
+    assert "PM10 (praf)=31.2 µg/m³" in reply
+
+
 def test_ollama_messages_include_recent_chat_history():
     history = [
         {"role": "user", "content": f"Mesaj utilizator {index}"}

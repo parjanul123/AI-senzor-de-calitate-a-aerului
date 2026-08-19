@@ -20,6 +20,7 @@ from app.core.config import (
     OLLAMA_TOP_P,
 )
 from app.core.database import get_measurements
+from app.services.bert_sensor_detector import detect_sensor_features
 from app.services.predictor import predict_air_quality
 
 
@@ -256,8 +257,10 @@ class RuleBasedAirQualityChatbot:
             "ce valori", "valoarea", "valorile", "nivelul", "cât", "cat ",
             "calitatea aerului", "starea aerului", "etichet", "predic", "prognoz",
         ]
+        if not any(token in normalized_message for token in current_markers):
+            return False
         has_sensor = any(token in normalized_message for token in LIVE_FEATURE_ALIASES)
-        return any(token in normalized_message for token in current_markers) and has_sensor
+        return has_sensor or bool(detect_sensor_features(normalized_message))
 
     @staticmethod
     def _requested_live_features(normalized_message: str) -> list[str]:
@@ -265,6 +268,8 @@ class RuleBasedAirQualityChatbot:
         for alias, feature in sorted(LIVE_FEATURE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
             if alias in normalized_message and feature not in features:
                 features.append(feature)
+        if not features:
+            features.extend(detect_sensor_features(normalized_message))
         return features
 
     @staticmethod
