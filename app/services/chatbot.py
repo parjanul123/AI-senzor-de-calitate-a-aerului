@@ -179,6 +179,40 @@ REFERENCE_ALIASES: dict[str, str] = {
     "scd41": "st",
 }
 
+LIVE_FEATURE_ALIASES: dict[str, str] = {
+    "pm 2.5": "pm25",
+    "pm2.5": "pm25",
+    "pm25": "pm25",
+    "pm 10": "pm10",
+    "pm10": "pm10",
+    "praf": "pm10",
+    "praful": "pm10",
+    "pulberi": "pm10",
+    "pm 1": "pm1",
+    "pm1": "pm1",
+    "co2": "co2",
+    "co₂": "co2",
+    "dioxid de carbon": "co2",
+    "temperatur": "temperature",
+    "umiditat": "humidity",
+    "presiun": "pressure",
+    "voc": "voc",
+    "tvoc": "voc",
+    "lux": "lux",
+}
+
+LIVE_MEASUREMENT_FIELDS: dict[str, tuple[str, ...]] = {
+    "temperature": ("temperature", "temperatura"),
+    "humidity": ("humidity", "umiditate"),
+    "pressure": ("pressure", "presiune"),
+    "pm1": ("pm1",),
+    "pm25": ("pm25", "pm2_5"),
+    "pm10": ("pm10",),
+    "co2": ("co2",),
+    "voc": ("voc", "tvoc"),
+    "lux": ("lux",),
+}
+
 REFERENCE_CODE_ALIASES: dict[str, str] = {
     "t": "temperature",
     "h": "humidity",
@@ -216,11 +250,22 @@ class RuleBasedAirQualityChatbot:
 
     @staticmethod
     def is_live_data_question(normalized_message: str) -> bool:
-        return any(token in normalized_message for token in [
+        current_markers = [
             "acum", "actual", "actuala", "camera mea", "in camera", "în cameră",
             "ultima măsurătoare", "ultima masuratoare", "ce temperatura", "ce temperatură",
-            "ce valori", "calitatea aerului", "starea aerului", "etichet", "predic", "prognoz",
-        ])
+            "ce valori", "valoarea", "valorile", "nivelul", "cât", "cat ",
+            "calitatea aerului", "starea aerului", "etichet", "predic", "prognoz",
+        ]
+        has_sensor = any(token in normalized_message for token in LIVE_FEATURE_ALIASES)
+        return any(token in normalized_message for token in current_markers) and has_sensor
+
+    @staticmethod
+    def _requested_live_features(normalized_message: str) -> list[str]:
+        features: list[str] = []
+        for alias, feature in sorted(LIVE_FEATURE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+            if alias in normalized_message and feature not in features:
+                features.append(feature)
+        return features
 
     @staticmethod
     def try_build_live_prediction(model_outputs: dict[str, Any]) -> None:
@@ -252,10 +297,8 @@ class RuleBasedAirQualityChatbot:
                 "Analizez predicții, detectez anomalii și evaluez performanța modelelor pentru a te ajuta."
             )
 
-        if self.is_live_data_question(normalized) and any(
-            token in normalized for token in ["temperatur", "calitatea aerului", "starea aerului", "etichet"]
-        ):
-            return self._format_live_status_reply(context)
+        if self.is_live_data_question(normalized):
+            return self._format_live_status_reply(context, normalized)
 
         if any(token in normalized for token in ["ug/m3", "µg/m3", "µg/m³", "ppm", "ce inseamna", "ce înseamnă", "unitate", "prag", "interval"]):
             reference_reply = self.build_reference_reply(message, normalized)
@@ -471,12 +514,33 @@ class RuleBasedAirQualityChatbot:
         )
 
     @staticmethod
-    def _format_live_status_reply(context: ChatbotContext) -> str:
+    def _format_live_status_reply(context: ChatbotContext, normalized_message: str) -> str:
         measurement = context.latest_measurement
         if measurement is None:
             return "Nu am găsit o măsurătoare actuală în baza de date Supabase. Verifică senzorul și conexiunea."
 
-        temperature = measurement.get("temperature", measurement.get("temperatura", "n/a"))
+        requested_features = RuleBasedAirQualityChatbot._requested_live_features(normalized_message)
+        if not requested_features or "calitatea aerului" in normalized_message or "starea aerului" in normalized_message:
+            requested_features = ["temperature", "humidity", "pm25", "pm10", "co2"]
+
+        feature_names = {
+            "temperature": ("temperatura", "°C"),
+            "humidity": ("umiditatea", "%"),
+            "pressure": ("presiunea", "hPa"),
+            "pm1": ("PM1", "µg/m³"),
+            "pm25": ("PM2.5", "µg/m³"),
+            "pm10": ("PM10 (praf)", "µg/m³"),
+            "co2": ("CO2", "ppm"),
+            "voc": ("VOC", "ppb"),
+            "lux": ("lumina", "lx"),
+        }
+        values = []
+        for feature in requested_features:
+            field_names = LIVE_MEASUREMENT_FIELDS.get(feature, (feature,))
+            value = next((measurement[field] for field in field_names if field in measurement), "n/a")
+            name, unit = feature_names[feature]
+            values.append(f"{name}={value} {unit}")
+
         quality_label = str(measurement.get("quality_label") or "").strip().lower()
         label_names = {"good": "bună", "moderate": "moderată", "poor": "slabă"}
         prediction = (context.model_outputs or {}).get("latest_prediction") or {}
@@ -487,7 +551,7 @@ class RuleBasedAirQualityChatbot:
         if prediction_label in label_names:
             details.append(f"predicția modelului indică o calitate {label_names[prediction_label]}")
         suffix = f" {'; '.join(details).capitalize()}." if details else " Nu există încă o etichetă validă pentru această înregistrare."
-        return f"În camera ta, ultima temperatură citită din baza de date este {temperature} °C.{suffix}"
+        return f"Din ultima măsurătoare din baza de date: {'; '.join(values)}.{suffix}"
 
     @staticmethod
     def _format_prediction_reply(prediction_payload: dict[str, Any]) -> str:

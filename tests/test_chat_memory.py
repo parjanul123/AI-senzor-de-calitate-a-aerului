@@ -33,6 +33,27 @@ def test_chatbot_reports_missing_current_measurement(monkeypatch):
     assert "Nu am găsit" in reply
 
 
+def test_chatbot_reads_requested_dust_and_air_values_from_database(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{
+            "temperature": 23.4,
+            "humidity": 48.0,
+            "pm25": 12.6,
+            "pm10": 31.2,
+            "co2": 742.0,
+        }]),
+    )
+
+    reply = get_chatbot_reply("Care este valoarea prafului și a CO2 acum?")
+
+    assert "PM10 (praf)=31.2 µg/m³" in reply
+    assert "CO2=742.0 ppm" in reply
+    assert "PM2.5" not in reply
+
+
 def test_ollama_messages_include_recent_chat_history():
     history = [
         {"role": "user", "content": f"Mesaj utilizator {index}"}
