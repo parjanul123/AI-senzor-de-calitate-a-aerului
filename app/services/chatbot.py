@@ -20,6 +20,7 @@ from app.core.config import (
     OLLAMA_TOP_P,
 )
 from app.core.database import get_measurements
+from app.services.predictor import predict_air_quality
 
 
 AIR_QUALITY_REFERENCE: dict[str, dict[str, str]] = {
@@ -213,6 +214,29 @@ class RuleBasedAirQualityChatbot:
             model_outputs=model_outputs or {},
         )
 
+    @staticmethod
+    def is_live_data_question(normalized_message: str) -> bool:
+        return any(token in normalized_message for token in [
+            "acum", "actual", "actuala", "camera mea", "in camera", "în cameră",
+            "ultima măsurătoare", "ultima masuratoare", "ce temperatura", "ce temperatură",
+            "ce valori", "calitatea aerului", "starea aerului", "etichet", "predic", "prognoz",
+        ])
+
+    @staticmethod
+    def try_build_live_prediction(model_outputs: dict[str, Any]) -> None:
+        if model_outputs.get("latest_prediction"):
+            return
+        try:
+            prediction, confidence, feature_values, feature_assessment = predict_air_quality()
+        except (RuntimeError, ValueError, KeyError, TypeError, OSError):
+            return
+        model_outputs["latest_prediction"] = {
+            "prediction": str(prediction),
+            "confidence": confidence,
+            "input_values": feature_values,
+            "feature_assessment": feature_assessment,
+        }
+
     def generate_reply(self, message: str, context: ChatbotContext) -> str:
         normalized = (message or "").strip().lower()
 
@@ -227,6 +251,11 @@ class RuleBasedAirQualityChatbot:
                 "Salut! Sunt asistentul Air Quality AI. "
                 "Analizez predicții, detectez anomalii și evaluez performanța modelelor pentru a te ajuta."
             )
+
+        if self.is_live_data_question(normalized) and any(
+            token in normalized for token in ["temperatur", "calitatea aerului", "starea aerului", "etichet"]
+        ):
+            return self._format_live_status_reply(context)
 
         if any(token in normalized for token in ["ug/m3", "µg/m3", "µg/m³", "ppm", "ce inseamna", "ce înseamnă", "unitate", "prag", "interval"]):
             reference_reply = self.build_reference_reply(message, normalized)
@@ -442,6 +471,25 @@ class RuleBasedAirQualityChatbot:
         )
 
     @staticmethod
+    def _format_live_status_reply(context: ChatbotContext) -> str:
+        measurement = context.latest_measurement
+        if measurement is None:
+            return "Nu am găsit o măsurătoare actuală în baza de date Supabase. Verifică senzorul și conexiunea."
+
+        temperature = measurement.get("temperature", measurement.get("temperatura", "n/a"))
+        quality_label = str(measurement.get("quality_label") or "").strip().lower()
+        label_names = {"good": "bună", "moderate": "moderată", "poor": "slabă"}
+        prediction = (context.model_outputs or {}).get("latest_prediction") or {}
+        prediction_label = str(prediction.get("prediction") or "").strip().lower()
+        details = []
+        if quality_label in label_names:
+            details.append(f"eticheta din baza de date este «{label_names[quality_label]}»")
+        if prediction_label in label_names:
+            details.append(f"predicția modelului indică o calitate {label_names[prediction_label]}")
+        suffix = f" {'; '.join(details).capitalize()}." if details else " Nu există încă o etichetă validă pentru această înregistrare."
+        return f"În camera ta, ultima temperatură citită din baza de date este {temperature} °C.{suffix}"
+
+    @staticmethod
     def _format_prediction_reply(prediction_payload: dict[str, Any]) -> str:
         prediction = prediction_payload.get("prediction", "necunoscut")
         confidence = prediction_payload.get("confidence")
@@ -547,7 +595,7 @@ class RuleBasedAirQualityChatbot:
         )
 
     def build_reference_reply(self, original_message: str, normalized_message: str) -> str | None:
-        detected_topics = self._detect_reference_topics(normalized_message)
+        detected_topics = self.detect_reference_topics(normalized_message)
         numeric_value = self._extract_numeric_value(normalized_message)
 
         if not detected_topics and any(token in normalized_message for token in ["ug/m3", "µg/m3", "µg/m³", "ppm"]):
@@ -582,7 +630,7 @@ class RuleBasedAirQualityChatbot:
         )
 
     @staticmethod
-    def _detect_reference_topics(normalized_message: str) -> list[str]:
+    def detect_reference_topics(normalized_message: str) -> list[str]:
         topics: list[str] = []
         for alias, topic in REFERENCE_ALIASES.items():
             pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
@@ -939,9 +987,13 @@ def get_chatbot_reply(
     chatbot = RuleBasedAirQualityChatbot()
 
     normalized = (message or "").strip().lower()
-    detected_topics = chatbot._detect_reference_topics(normalized)
+    is_live_question = chatbot.is_live_data_question(normalized)
+    if is_live_question:
+        model_outputs = model_outputs if model_outputs is not None else {}
+        chatbot.try_build_live_prediction(model_outputs)
+    detected_topics = chatbot.detect_reference_topics(normalized)
 
-    if detected_topics:
+    if detected_topics and not is_live_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
@@ -962,12 +1014,15 @@ def get_chatbot_reply(
         "ridicat",
         "bun",
     ]
-    if any(token in normalized for token in reference_intent_tokens):
+    if any(token in normalized for token in reference_intent_tokens) and not is_live_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
 
     context = chatbot.build_context(model_outputs=model_outputs)
+
+    if is_live_question:
+        return chatbot.generate_reply(message=message, context=context)
 
     llm_reply = _generate_ollama_reply(
         message=message,

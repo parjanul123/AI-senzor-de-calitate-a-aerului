@@ -1,6 +1,38 @@
 from app.services.chatbot import ChatbotContext, _build_ollama_messages, get_chatbot_reply
 
 
+def test_chatbot_reads_current_temperature_and_database_label(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"temperature": 23.4, "quality_label": "good"}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.predict_air_quality",
+        lambda: ("good", 0.91, {"temperature": 23.4}, {}),
+    )
+
+    reply = get_chatbot_reply("Ce temperatură este acum în camera mea și cum e eticheta?")
+
+    assert "23.4" in reply
+    assert "bună" in reply
+    assert "baza de date" in reply
+
+
+def test_chatbot_reports_missing_current_measurement(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame(),
+    )
+
+    reply = get_chatbot_reply("Care este temperatura actuală în cameră?")
+
+    assert "Nu am găsit" in reply
+
+
 def test_ollama_messages_include_recent_chat_history():
     history = [
         {"role": "user", "content": f"Mesaj utilizator {index}"}
