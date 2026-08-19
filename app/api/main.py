@@ -42,10 +42,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class PredictionResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     status: str
     message: str
     prediction: Optional[str] = None
     confidence: Optional[float] = None
+    model_type: Optional[str] = None
+    algorithm_comparison: list[dict[str, Any]] | None = None
     input_values: dict[str, float] | None = None
     feature_assessment: dict[str, Any] | None = None
     source_measurement: dict[str, Any] | None = None
@@ -152,6 +156,8 @@ def root():
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(
+    model_type: Literal["random_forest", "xgboost", "svm"] = Query(default="random_forest"),
+    compare_models: bool = Query(default=False),
     use_hourly_average: bool = Query(default=False),
     aggregation_hours: int = Query(default=1, ge=1, le=168),
     include_forecast: bool = Query(default=False),
@@ -162,6 +168,7 @@ def predict(
         prediction, confidence, feature_values, feature_assessment = predict_air_quality(
             use_hourly_average=use_hourly_average,
             aggregation_hours=aggregation_hours,
+            model_type=model_type,
         )
     except RuntimeError as exc:
         error_msg = str(exc)
@@ -191,17 +198,49 @@ def predict(
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    prediction_message = "Predicție realizată cu modelul Random Forest."
+    model_names = {
+        "random_forest": "Random Forest",
+        "xgboost": "XGBoost",
+        "svm": "SVM",
+    }
+    prediction_message = f"Predicție realizată cu modelul {model_names[model_type]}."
     if use_hourly_average:
         prediction_message = (
-            "Predicție realizată cu modelul Random Forest folosind medii agregate pe interval orar."
+            f"Predicție realizată cu modelul {model_names[model_type]} folosind medii agregate pe interval orar."
         )
+
+    algorithm_comparison = None
+    if compare_models:
+        algorithm_comparison = []
+        for candidate_model in model_names:
+            try:
+                candidate_prediction, candidate_confidence, _, _ = predict_air_quality(
+                    use_hourly_average=use_hourly_average,
+                    aggregation_hours=aggregation_hours,
+                    model_type=candidate_model,
+                )
+                algorithm_comparison.append({
+                    "model_type": candidate_model,
+                    "model_name": model_names[candidate_model],
+                    "prediction": str(candidate_prediction),
+                    "confidence": candidate_confidence,
+                    "status": "success",
+                })
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                algorithm_comparison.append({
+                    "model_type": candidate_model,
+                    "model_name": model_names[candidate_model],
+                    "status": "unavailable",
+                    "error": str(exc),
+                })
 
     response_payload = PredictionResponse(
         status="success",
         message=prediction_message,
         prediction=str(prediction),
         confidence=confidence,
+        model_type=model_type,
+        algorithm_comparison=algorithm_comparison,
         input_values=feature_values,
         feature_assessment=feature_assessment,
         source_measurement=feature_values,

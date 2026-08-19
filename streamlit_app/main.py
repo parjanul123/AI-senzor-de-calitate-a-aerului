@@ -128,6 +128,14 @@ elif selected_page == "Predict":
     
     if prediction_mode == "Real (Supabase)":
         st.write("Predicția folosește ultima înregistrare din tabela measurements din Supabase.")
+        model_options = {
+            "Random Forest": "random_forest",
+            "XGBoost": "xgboost",
+            "SVM": "svm",
+        }
+        selected_model_name = st.selectbox("Algoritm pentru predicție", list(model_options.keys()))
+        selected_model_type = model_options[selected_model_name]
+        compare_models = st.checkbox("Compară rezultatele tuturor algoritmilor", value=True)
         use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
         aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
         future_hours = st.slider("Ore viitoare pentru prognoză", min_value=0, max_value=48, value=0)
@@ -139,6 +147,9 @@ elif selected_page == "Predict":
                 if use_hourly_average:
                     query_parts.append("use_hourly_average=true")
                     query_parts.append(f"aggregation_hours={aggregation_hours}")
+                query_parts.append(f"model_type={selected_model_type}")
+                if compare_models:
+                    query_parts.append("compare_models=true")
                 if future_hours > 0:
                     query_parts.append("include_forecast=true")
                     query_parts.append(
@@ -157,6 +168,21 @@ elif selected_page == "Predict":
                 st.write(f"Mesaj: {result.get('message')}")
                 st.write(f"Predicție: {result.get('prediction')}")
                 st.write(f"Încredere: {result.get('confidence')}")
+                st.write(f"Algoritm folosit: {result.get('model_type', selected_model_name)}")
+
+                algorithm_comparison = result.get("algorithm_comparison") or []
+                if algorithm_comparison:
+                    st.subheader("Comparație între algoritmi")
+                    comparison_rows = [
+                        {
+                            "algoritm": item.get("model_name", item.get("model_type")),
+                            "predicție": item.get("prediction", "N/A"),
+                            "încredere": item.get("confidence", "N/A"),
+                            "status": item.get("status"),
+                        }
+                        for item in algorithm_comparison
+                    ]
+                    st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True)
 
                 st.subheader("Valorile folosite pentru predicție")
                 st.json(result.get("input_values", {}))

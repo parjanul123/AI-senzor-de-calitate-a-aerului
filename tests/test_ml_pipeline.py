@@ -415,6 +415,30 @@ def test_predict_air_quality_uses_latest_measurement(monkeypatch):
     assert feature_assessment["co2"]["condition"] == "poluat"
 
 
+def test_predict_air_quality_passes_selected_model_type(monkeypatch):
+    database_rows = _sample_measurements_dataframe()
+    loaded_model_types = []
+
+    class DummyModel:
+        def predict(self, _input_df):
+            return ["good"]
+
+        def predict_proba(self, _input_df):
+            return [[0.8, 0.2]]
+
+    monkeypatch.setattr(predictor_module, "get_measurements", lambda **kwargs: database_rows)
+
+    def fake_load_model(*args, **kwargs):
+        loaded_model_types.append(kwargs.get("model_type"))
+        return DummyModel()
+
+    monkeypatch.setattr(predictor_module, "load_model", fake_load_model)
+
+    predictor_module.predict_air_quality(model_type="xgboost")
+
+    assert loaded_model_types == ["xgboost"]
+
+
 def test_predict_air_quality_replaces_stopped_sensor_value_with_valid_history(monkeypatch):
     rows = [
         {

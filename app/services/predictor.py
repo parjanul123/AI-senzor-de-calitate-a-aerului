@@ -836,7 +836,11 @@ def _load_latest_measurement_features() -> tuple[pd.DataFrame, dict[str, float]]
     return input_df, feature_values
 
 
-def predict_air_quality(use_hourly_average: bool = False, aggregation_hours: int = 1):
+def predict_air_quality(
+    use_hourly_average: bool = False,
+    aggregation_hours: int = 1,
+    model_type: str | None = "random_forest",
+):
     if use_hourly_average:
         input_df, feature_values = _build_hourly_average_features(hours_window=max(1, int(aggregation_hours)))
     else:
@@ -858,7 +862,7 @@ def predict_air_quality(use_hourly_average: bool = False, aggregation_hours: int
     else:
         excluded_features = set()
 
-    model = load_model()
+    model = load_model(model_type=model_type)
     prediction = model.predict(input_df)[0]
     confidence = float(np.max(model.predict_proba(input_df)))
     feature_assessment = _build_feature_assessment(feature_values, sensor_warning_map=sensor_warning_map)
