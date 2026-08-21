@@ -313,8 +313,8 @@ class RuleBasedAirQualityChatbot:
 
         if any(token in normalized for token in ["salut", "hello", "buna", "bună"]):
             return (
-                "Salut! Sunt asistentul Air Quality AI. "
-                "Analizez predicții, detectez anomalii și evaluez performanța modelelor pentru a te ajuta."
+                "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului. "
+                "Vreau să știu cu ce te pot ajuta."
             )
 
         if self.is_live_data_question(normalized):

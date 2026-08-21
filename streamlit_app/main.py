@@ -809,10 +809,6 @@ elif selected_page == "Database":
 elif selected_page == "Chat":
     st.title("Chat")
     st.write("Asistent rule-based pentru întrebări despre calitatea aerului.")
-    st.chat_message("assistant").write(
-        "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului. "
-        "Pentru a continua, alege un dispozitiv din lista de mai jos."
-    )
     chat_devices = get_device_options()
     chat_device = st.selectbox(
         "Alege dispozitivul pentru chat",
@@ -827,7 +823,13 @@ elif selected_page == "Chat":
 
     previous_chat_device = st.session_state.get("chat_device_previous")
     if chat_device != previous_chat_device:
-        st.session_state.chat_history = []
+        st.session_state.chat_history = [{
+            "role": "assistant",
+            "content": (
+                "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului. "
+                "Pentru a continua, alege un dispozitiv din lista de mai jos."
+            ),
+        }]
         st.session_state.chat_device_previous = chat_device
 
     # Initialize session state for chat history
