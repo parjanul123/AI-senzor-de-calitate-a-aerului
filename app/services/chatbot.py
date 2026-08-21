@@ -24,6 +24,9 @@ from app.services.bert_sensor_detector import detect_sensor_features
 from app.services.predictor import predict_air_quality
 
 
+WELCOME_MESSAGE = "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului."
+
+
 AIR_QUALITY_REFERENCE: dict[str, dict[str, str]] = {
     "temperature": {
         "name": "T (temperatura aerului)",
@@ -313,7 +316,7 @@ class RuleBasedAirQualityChatbot:
 
         if any(token in normalized for token in ["salut", "hello", "buna", "bună"]):
             return (
-                "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului. "
+                f"{WELCOME_MESSAGE} "
                 "Vreau să știu cu ce te pot ajuta."
             )
 
@@ -1121,3 +1124,7 @@ def get_chatbot_reply(
         return llm_reply
 
     return chatbot.generate_reply(message=message, context=context)
+
+
+def get_chatbot_welcome_message() -> str:
+    return WELCOME_MESSAGE

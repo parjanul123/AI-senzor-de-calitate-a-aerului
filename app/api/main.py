@@ -15,7 +15,7 @@ from app.models.train_model import (
 )
 from app.models.xgboost_model import train_and_save_xgboost
 from app.core.database import get_device_identifiers, get_measurements
-from app.services.chatbot import get_chatbot_reply
+from app.services.chatbot import get_chatbot_reply, get_chatbot_welcome_message
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
 
@@ -147,6 +147,11 @@ class ChatResponse(BaseModel):
     reply: str
     text: str
     selected: Optional[str] = None
+
+
+class ChatWelcomeResponse(BaseModel):
+    message: str
+    text: str
 
 
 @app.get("/health")
@@ -530,13 +535,15 @@ def detect_anomaly(
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     message = (request.message or request.text or "").strip()
-    if not message:
-        raise HTTPException(
-            status_code=422,
-            detail="Câmpul 'message' (sau aliasul 'text') este obligatoriu.",
-        )
-
     resolved_device_identifier = (request.device_identifier or request.selected or "").strip() or None
+
+    if not message:
+        welcome_message = get_chatbot_welcome_message()
+        return ChatResponse(
+            reply=welcome_message,
+            text=welcome_message,
+            selected=resolved_device_identifier,
+        )
 
     model_outputs = {
         "latest_prediction": getattr(app.state, "latest_prediction", None),
@@ -549,3 +556,9 @@ def chat(request: ChatRequest):
         device_identifier=resolved_device_identifier,
     )
     return ChatResponse(reply=reply, text=reply, selected=resolved_device_identifier)
+
+
+@app.get("/chat/welcome", response_model=ChatWelcomeResponse)
+def chat_welcome():
+    welcome_message = get_chatbot_welcome_message()
+    return ChatWelcomeResponse(message=welcome_message, text=welcome_message)
