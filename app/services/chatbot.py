@@ -579,7 +579,8 @@ class RuleBasedAirQualityChatbot:
                     "Nu s-a rulat încă vreo predicție. Mergi la tab-ul 'Predict' și apasă butonul pentru a-mi aduce date reale.",
                 ]
                 return random.choice(predict_tips)
-            return self._format_prediction_reply(prediction_payload)
+            reply_text = self._format_prediction_reply(prediction_payload)
+            return reply_text + self._device_scope_note(prediction_payload.get("device_identifier"))
 
         if any(token in normalized for token in ["training", "train", "antren", "model", "oob", "accuracy", "f1", "performant"]):
             training_payload = (context.model_outputs or {}).get("latest_training")
@@ -853,6 +854,7 @@ class RuleBasedAirQualityChatbot:
         return (
             f"Peste {horizon_hours} ore, estimarea pentru {feature_name} este {predicted_value:.2f} {feature_unit}. "
             f"Predicția generală a calității aerului: {quality_prediction}{confidence_text}."
+            f"{RuleBasedAirQualityChatbot._device_scope_note(context.selected_device_identifier)}"
         )
 
     @staticmethod
@@ -922,6 +924,15 @@ class RuleBasedAirQualityChatbot:
             details.append(f"predicția modelului indică o calitate {label_names[prediction_label]}")
         suffix = f" {'; '.join(details).capitalize()}." if details else " Nu există încă o etichetă validă pentru această înregistrare."
         return f"Din ultima măsurătoare din baza de date: {'; '.join(values)}.{suffix}"
+
+    @staticmethod
+    def _device_scope_note(device_identifier: str | None) -> str:
+        if device_identifier:
+            return ""
+        return (
+            " (Nu ai specificat un dispozitiv anume, așa că am folosit datele agregate de pe toate dispozitivele."
+            " Spune-mi identificatorul unui dispozitiv dacă vrei rezultatul doar pentru acela.)"
+        )
 
     @staticmethod
     def _format_prediction_reply(prediction_payload: dict[str, Any]) -> str:

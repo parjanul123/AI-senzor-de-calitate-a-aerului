@@ -580,12 +580,20 @@ def chat(request: ChatRequest):
         "latest_prediction": getattr(app.state, "latest_prediction", None),
         "latest_training": getattr(app.state, "latest_training", None),
     }
-    reply = get_chatbot_reply(
-        message,
-        model_outputs=model_outputs,
-        conversation_history=[] if device_changed else [chat_message.model_dump() for chat_message in request.history],
-        device_identifier=resolved_device_identifier,
-    )
+    try:
+        reply = get_chatbot_reply(
+            message,
+            model_outputs=model_outputs,
+            conversation_history=[] if device_changed else [chat_message.model_dump() for chat_message in request.history],
+            device_identifier=resolved_device_identifier,
+        )
+    except Exception:
+        # Never bubble up a 500 here: a raw HTTP error makes the mobile client
+        # show a generic "AI indisponibil" message far more often than needed.
+        reply = (
+            "Nu am putut procesa complet cererea acum, dar sunt disponibil. "
+            "Poți reformula întrebarea sau încearcă din nou în câteva secunde."
+        )
     if device_change_message:
         reply = f"{device_change_message}\n\n{reply}"
     return ChatResponse(
