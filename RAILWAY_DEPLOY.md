@@ -66,9 +66,12 @@ răspunsurile bazate pe reguli. Ca să ai același LLM și în producție:
    repo), cu Dockerfile Path setat la `Dockerfile.ollama`.
 2. Nu genera domeniu public pentru acest serviciu — rămâne accesibil doar intern, prin
    rețeaua privată Railway (`<nume-serviciu>.railway.internal`).
-3. Atenție la resurse: modelul implicit din `Dockerfile.ollama` e `qwen2.5:3b-instruct`
-   (mai mic, rulează pe planuri mai ieftine). Un model de 7B necesită un plan cu minim
-   6-8GB RAM. Poți schimba modelul prin variabila `OLLAMA_MODEL` din acel serviciu.
+3. Pe planul **Hobby** (8GB RAM/serviciu), modelul implicit din `Dockerfile.ollama`,
+   `qwen2.5:7b-instruct` (același ca local), încape ca memorie. Inferența e însă pe CPU
+   (fără GPU pe Hobby), deci răspunsurile vor fi mai lente decât local, iar rularea
+   continuă a modelului consumă din creditul lunar de $5 al planului. Dacă e prea lent
+   sau depășești creditul, schimbă `OLLAMA_MODEL` (din acel serviciu) cu un model mai mic,
+   ex: `qwen2.5:3b-instruct`.
 4. Adaugă un **Volume** montat pe `/root/.ollama` pentru serviciul Ollama, ca modelul
    descărcat să nu se piardă la fiecare redeploy (altfel se re-descarcă de fiecare dată,
    ceea ce încetinește pornirea).
@@ -77,7 +80,7 @@ răspunsurile bazate pe reguli. Ca să ai același LLM și în producție:
 ```text
 CHATBOT_USE_OLLAMA=true
 OLLAMA_BASE_URL=http://<nume-serviciu-ollama>.railway.internal:11434
-OLLAMA_MODEL=qwen2.5:3b-instruct
+OLLAMA_MODEL=qwen2.5:7b-instruct
 ```
 
 Folosește exact numele serviciului Ollama din Railway în loc de `<nume-serviciu-ollama>`.

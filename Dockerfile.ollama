@@ -4,9 +4,12 @@
 # internal Railway URL (e.g. http://ollama.railway.internal:11434).
 FROM ollama/ollama:latest
 
-# Pick a model that fits your Railway plan's RAM. A 7B model needs ~6-8GB RAM;
-# a 3B model (default here) runs comfortably on smaller/cheaper plans.
-ENV OLLAMA_MODEL=qwen2.5:3b-instruct
+# Pick a model that fits your Railway plan's RAM. The Hobby plan allows up to 8GB RAM
+# per service, which fits a quantized 7B model (~5GB) like the one used locally.
+# Inference is CPU-only on Hobby (no GPU), so replies will be noticeably slower than
+# on your local machine. Switch to a smaller model (e.g. qwen2.5:3b-instruct) if
+# responses feel too slow or you hit RAM limits.
+ENV OLLAMA_MODEL=qwen2.5:7b-instruct
 ENV OLLAMA_HOST=0.0.0.0:11434
 
 COPY ollama-entrypoint.sh /entrypoint.sh
