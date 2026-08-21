@@ -3,6 +3,7 @@ import traceback
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -99,6 +100,27 @@ def get_sensor_defaults_from_database():
 
     return defaults
 
+ALL_DEVICES_OPTION = "Toate dispozitivele"
+
+
+@st.cache_data(ttl=30)
+def get_device_options():
+    try:
+        return get_device_identifiers()
+    except (RuntimeError, ValueError, KeyError):
+        return []
+
+
+def select_device(widget_key: str, label: str = "Dispozitiv (sursa datelor)"):
+    devices = get_device_options()
+    if not devices:
+        st.caption("Nu au fost detectate dispozitive distincte in tabela measurements.")
+        return None
+
+    selected = st.selectbox(label, options=[ALL_DEVICES_OPTION] + devices, key=widget_key)
+    return None if selected == ALL_DEVICES_OPTION else selected
+
+
 st.set_page_config(page_title="Air Quality AI", page_icon="🌿", layout="wide")
 
 pages = {
@@ -135,6 +157,7 @@ elif selected_page == "Predict":
         }
         selected_model_name = st.selectbox("Algoritm pentru predicție", list(model_options.keys()))
         selected_model_type = model_options[selected_model_name]
+        predict_device = select_device("predict_device")
         compare_models = st.checkbox("Compară rezultatele tuturor algoritmilor", value=True)
         use_hourly_average = st.toggle("Folosește medie pe interval orar", value=False)
         aggregation_hours = st.slider("Interval orar pentru predicție (ore)", min_value=1, max_value=168, value=1)
@@ -148,6 +171,8 @@ elif selected_page == "Predict":
                     query_parts.append("use_hourly_average=true")
                     query_parts.append(f"aggregation_hours={aggregation_hours}")
                 query_parts.append(f"model_type={selected_model_type}")
+                if predict_device:
+                    query_parts.append(f"device_identifier={quote(str(predict_device))}")
                 if compare_models:
                     query_parts.append("compare_models=true")
                 if future_hours > 0:
@@ -526,6 +551,7 @@ elif selected_page == "Train":
                 "isolation_forest": "🔍 Isolation Forest",
             }[x],
         )
+        training_device = select_device("train_device")
         allow_derived_label_fallback = st.checkbox(
             "Permite fallback la etichete derivate (introduce data leakage)",
             value=False,
@@ -570,6 +596,7 @@ elif selected_page == "Train":
                     TRAIN_API_URL,
                     json={
                         "training_model": selected_model,
+                        "device_identifier": training_device,
                         "aggregation_hours": training_aggregation_hours,
                         "aggregation_minutes": training_aggregation_minutes,
                         "allow_derived_label_fallback": allow_derived_label_fallback,
@@ -678,9 +705,15 @@ elif selected_page == "Anomaly":
     st.title("Anomaly")
     st.write("Detecția folosește ultima înregistrare din tabela measurements din Supabase.")
 
+    anomaly_device = select_device("anomaly_device")
+
     if st.button("Detectează anomalia"):
         try:
-            response = requests.post(ANOMALY_API_URL, timeout=10)
+            response = requests.post(
+                ANOMALY_API_URL,
+                params={"device_identifier": anomaly_device} if anomaly_device else None,
+                timeout=10,
+            )
             response.raise_for_status()
             result = response.json()
             anomaly_data = result.get("result", {})

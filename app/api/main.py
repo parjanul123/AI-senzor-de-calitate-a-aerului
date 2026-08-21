@@ -14,7 +14,7 @@ from app.models.train_model import (
     train_and_save_svm,
 )
 from app.models.xgboost_model import train_and_save_xgboost
-from app.core.database import get_measurements
+from app.core.database import get_device_identifiers, get_measurements
 from app.services.chatbot import get_chatbot_reply
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
@@ -55,6 +55,7 @@ class PredictionResponse(BaseModel):
     source_measurement: dict[str, Any] | None = None
     forecast: list[dict[str, Any]] | None = None
     forecast_average: dict[str, Any] | None = None
+    device_identifier: Optional[str] = None
 
 
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
@@ -90,6 +91,10 @@ class TrainRequest(BaseModel):
     dataset_name: Optional[str] = None
     notes: Optional[str] = None
     training_model: str = "random_forest"
+    device_identifier: Optional[str] = Field(
+        default=None,
+        description="Antreneaza doar pe datele dispozitivului selectat. Gol = toate dispozitivele.",
+    )
     aggregation_hours: int = Field(default=24, ge=1, le=720)
     aggregation_minutes: Optional[int] = Field(default=None, ge=1, le=60)
     allow_derived_label_fallback: bool = Field(
@@ -154,6 +159,16 @@ def root():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/devices")
+def list_devices():
+    try:
+        devices = get_device_identifiers()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {"status": "success", "devices": devices}
+
+
 @app.post("/predict", response_model=PredictionResponse)
 def predict(
     model_type: Literal["random_forest", "xgboost", "svm"] = Query(default="random_forest"),
@@ -163,12 +178,17 @@ def predict(
     include_forecast: bool = Query(default=False),
     forecast_horizons: str = Query(default="1,3,6,12,24"),
     forecast_lookback_hours: int | None = Query(default=None, ge=2, le=720),
+    device_identifier: str | None = Query(
+        default=None,
+        description="Foloseste doar datele dispozitivului selectat. Gol = toate dispozitivele.",
+    ),
 ):
     try:
         prediction, confidence, feature_values, feature_assessment = predict_air_quality(
             use_hourly_average=use_hourly_average,
             aggregation_hours=aggregation_hours,
             model_type=model_type,
+            device_identifier=device_identifier,
         )
     except RuntimeError as exc:
         error_msg = str(exc)
@@ -193,6 +213,7 @@ def predict(
                 horizons_hours=horizons,
                 lookback_hours=resolved_lookback,
                 sensor_warning_map=sensor_warning_map,
+                device_identifier=device_identifier,
             )
             forecast_average_payload = summarize_forecast_average(forecast_payload)
         except (RuntimeError, ValueError) as exc:
@@ -208,6 +229,8 @@ def predict(
         prediction_message = (
             f"Predicție realizată cu modelul {model_names[model_type]} folosind medii agregate pe interval orar."
         )
+    if device_identifier:
+        prediction_message += f" Date filtrate pentru dispozitivul '{device_identifier}'."
 
     algorithm_comparison = None
     if compare_models:
@@ -218,6 +241,7 @@ def predict(
                     use_hourly_average=use_hourly_average,
                     aggregation_hours=aggregation_hours,
                     model_type=candidate_model,
+                    device_identifier=device_identifier,
                 )
                 algorithm_comparison.append({
                     "model_type": candidate_model,
@@ -246,6 +270,7 @@ def predict(
         source_measurement=feature_values,
         forecast=forecast_payload,
         forecast_average=forecast_average_payload,
+        device_identifier=device_identifier,
     )
 
     app.state.latest_prediction = response_payload.model_dump()
@@ -341,6 +366,7 @@ def predict_custom(data: CustomPredictionRequest):
 
 @app.post("/train")
 def train_model(request: TrainRequest):
+    device_identifier = (request.device_identifier or "").strip() or None
     try:
         if request.training_model == "isolation_forest":
             _, training_report = train_and_save_isolation_forest(
@@ -348,6 +374,7 @@ def train_model(request: TrainRequest):
                 use_hourly_aggregation=True,
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
+                device_identifier=device_identifier,
             )
             trained_model = "isolation_forest"
         elif request.training_model == "svm":
@@ -357,6 +384,7 @@ def train_model(request: TrainRequest):
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
                 allow_derived_label_fallback=request.allow_derived_label_fallback,
+                device_identifier=device_identifier,
             )
             trained_model = "svm"
         elif request.training_model == "xgboost":
@@ -366,6 +394,7 @@ def train_model(request: TrainRequest):
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
                 allow_derived_label_fallback=request.allow_derived_label_fallback,
+                device_identifier=device_identifier,
             )
             trained_model = "xgboost"
         else:
@@ -375,6 +404,7 @@ def train_model(request: TrainRequest):
                 aggregation_hours=request.aggregation_hours,
                 aggregation_minutes=request.aggregation_minutes,
                 allow_derived_label_fallback=request.allow_derived_label_fallback,
+                device_identifier=device_identifier,
             )
             trained_model = "random_forest"
     except RuntimeError as exc:
@@ -391,6 +421,9 @@ def train_model(request: TrainRequest):
             "Modelul a fost antrenat și salvat folosind agregare la nivel de minut pe intervalul orar selectat."
         )
 
+    if device_identifier:
+        training_message += f" Au fost folosite doar datele dispozitivului '{device_identifier}'."
+
     response_payload = {
         "status": "success",
         "message": training_message,
@@ -398,6 +431,7 @@ def train_model(request: TrainRequest):
         "training_report": training_report,
         "dataset_name": request.dataset_name,
         "notes": request.notes,
+        "device_identifier": device_identifier,
         "allow_derived_label_fallback": request.allow_derived_label_fallback,
     }
 
@@ -451,14 +485,26 @@ def train_demo(allow_derived_label_fallback: bool = Query(default=True)):
 
 
 @app.post("/anomaly")
-def detect_anomaly():
+def detect_anomaly(
+    device_identifier: str | None = Query(
+        default=None,
+        description="Foloseste doar datele dispozitivului selectat. Gol = toate dispozitivele.",
+    ),
+):
     try:
-        result = detect_anomaly_service()
+        result = detect_anomaly_service(device_identifier=device_identifier)
+
+        message = (
+            "Detecție realizată cu modelul Isolation Forest folosind ultima înregistrare din measurements."
+        )
+        if device_identifier:
+            message += f" Dispozitiv selectat: '{device_identifier}'."
 
         return {
             "status": "success",
-            "message": "Detecție realizată cu modelul Isolation Forest folosind ultima înregistrare din measurements.",
-            "sensor_id": "latest-measurement",
+            "message": message,
+            "sensor_id": device_identifier or "latest-measurement",
+            "device_identifier": device_identifier,
             "result": result,
         }
     except Exception as exc:

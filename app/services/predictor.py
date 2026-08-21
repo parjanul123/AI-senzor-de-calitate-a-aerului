@@ -648,11 +648,17 @@ def build_forecast(
     horizons_hours: list[int],
     lookback_hours: int = 72,
     sensor_warning_map: dict[str, str] | None = None,
+    device_identifier: str | None = None,
 ) -> list[dict[str, object]]:
     if not horizons_hours:
         return []
 
-    measurements = get_measurements(limit=5000, descending=True, raise_on_error=True)
+    measurements = get_measurements(
+        device_identifier=device_identifier,
+        limit=5000,
+        descending=True,
+        raise_on_error=True,
+    )
     if measurements.empty:
         raise RuntimeError("Tabela 'measurements' nu conține date pentru prognoză.")
 
@@ -684,7 +690,14 @@ def build_forecast(
         feature_name: _compute_feature_stats(frame, feature_name)
         for feature_name in FEATURE_ALIASES
     }
-    sensor_warning_map = sensor_warning_map or _build_sensor_warning_map()
+    sensor_warning_map = sensor_warning_map or _build_sensor_warning_map(
+        get_measurements(
+            device_identifier=device_identifier,
+            limit=ZERO_WARNING_LOOKBACK_ROWS,
+            descending=True,
+            raise_on_error=False,
+        )
+    )
     model = load_model()
     forecast: list[dict[str, object]] = []
 
@@ -787,8 +800,16 @@ def summarize_forecast_average(forecast: list[dict[str, object]]) -> dict[str, o
     }
 
 
-def _build_hourly_average_features(hours_window: int) -> tuple[pd.DataFrame, dict[str, float]]:
-    measurements = get_measurements(limit=5000, descending=True, raise_on_error=True)
+def _build_hourly_average_features(
+    hours_window: int,
+    device_identifier: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    measurements = get_measurements(
+        device_identifier=device_identifier,
+        limit=5000,
+        descending=True,
+        raise_on_error=True,
+    )
     if measurements.empty:
         raise RuntimeError("Tabela 'measurements' nu conține date pentru predicție.")
 
@@ -822,8 +843,15 @@ def _build_hourly_average_features(hours_window: int) -> tuple[pd.DataFrame, dic
     return input_df, feature_values
 
 
-def _load_latest_measurement_features() -> tuple[pd.DataFrame, dict[str, float]]:
-    measurements = get_measurements(limit=1, descending=True, raise_on_error=True)
+def _load_latest_measurement_features(
+    device_identifier: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    measurements = get_measurements(
+        device_identifier=device_identifier,
+        limit=1,
+        descending=True,
+        raise_on_error=True,
+    )
     if measurements.empty:
         raise RuntimeError("Tabela 'measurements' nu conține date pentru predicție.")
 
@@ -840,13 +868,18 @@ def predict_air_quality(
     use_hourly_average: bool = False,
     aggregation_hours: int = 1,
     model_type: str | None = "random_forest",
+    device_identifier: str | None = None,
 ):
     if use_hourly_average:
-        input_df, feature_values = _build_hourly_average_features(hours_window=max(1, int(aggregation_hours)))
+        input_df, feature_values = _build_hourly_average_features(
+            hours_window=max(1, int(aggregation_hours)),
+            device_identifier=device_identifier,
+        )
     else:
-        input_df, feature_values = _load_latest_measurement_features()
+        input_df, feature_values = _load_latest_measurement_features(device_identifier=device_identifier)
 
     sensor_history = get_measurements(
+        device_identifier=device_identifier,
         limit=ZERO_WARNING_LOOKBACK_ROWS,
         descending=True,
         raise_on_error=False,

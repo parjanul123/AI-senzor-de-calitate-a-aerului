@@ -31,8 +31,15 @@ def _extract_measurement_feature(row: pd.Series, feature_name: str) -> float:
     )
 
 
-def _load_latest_measurement_features() -> tuple[pd.DataFrame, dict[str, float]]:
-    measurements = get_measurements(limit=1, descending=True, raise_on_error=True)
+def _load_latest_measurement_features(
+    device_identifier: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    measurements = get_measurements(
+        device_identifier=device_identifier,
+        limit=1,
+        descending=True,
+        raise_on_error=True,
+    )
     if measurements.empty:
         raise RuntimeError("Tabela 'measurements' nu conține date pentru detecția anomaliilor.")
 
@@ -66,8 +73,14 @@ def _has_recent_sudden_zero_drop(values: list[float], recent_zero_streak: int) -
 
 def _build_feature_analysis(
     current_values: dict[str, float],
+    device_identifier: str | None = None,
 ) -> tuple[list[dict[str, float | str | bool]], list[str], list[str]]:
-    baseline_df = get_measurements(limit=ANALYSIS_BASELINE_ROWS, descending=True, raise_on_error=False)
+    baseline_df = get_measurements(
+        device_identifier=device_identifier,
+        limit=ANALYSIS_BASELINE_ROWS,
+        descending=True,
+        raise_on_error=False,
+    )
     if baseline_df.empty:
         return [], [], []
 
@@ -130,10 +143,13 @@ def _build_feature_analysis(
     return analysis_rows, anomalous_features, sensor_health_warnings
 
 
-def detect_anomaly():
-    input_df, feature_values = _load_latest_measurement_features()
+def detect_anomaly(device_identifier: str | None = None):
+    input_df, feature_values = _load_latest_measurement_features(device_identifier=device_identifier)
     model = load_model(config.IF_MODEL_PATH)
-    feature_analysis, anomalous_features, sensor_health_warnings = _build_feature_analysis(feature_values)
+    feature_analysis, anomalous_features, sensor_health_warnings = _build_feature_analysis(
+        feature_values,
+        device_identifier=device_identifier,
+    )
 
     prediction = int(model.predict(input_df)[0])
     score = float(model.decision_function(input_df)[0])
@@ -148,4 +164,5 @@ def detect_anomaly():
         "anomalous_features": anomalous_features,
         "feature_analysis": feature_analysis,
         "sensor_health_warnings": sensor_health_warnings,
+        "device_identifier": device_identifier,
     }

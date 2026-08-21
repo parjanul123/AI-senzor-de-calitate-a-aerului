@@ -368,9 +368,15 @@ def _load_training_frame(
     row_limit: int = LATEST_TRAINING_ROWS,
     require_labels: bool = True,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ) -> pd.DataFrame:
     fetch_limit = None if use_hourly_aggregation else int(row_limit)
-    dataframe = get_measurements(limit=fetch_limit, descending=True, raise_on_error=True)
+    dataframe = get_measurements(
+        device_identifier=device_identifier,
+        limit=fetch_limit,
+        descending=True,
+        raise_on_error=True,
+    )
     normalized = _normalize_measurement_frame(dataframe)
 
     if normalized.empty:
@@ -483,6 +489,7 @@ def load_training_data(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ):
     training_frame = _load_training_frame(
         use_hourly_aggregation=use_hourly_aggregation,
@@ -491,6 +498,7 @@ def load_training_data(
         row_limit=row_limit,
         require_labels=True,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
     X = training_frame[FEATURE_COLUMNS]
     y = training_frame[TARGET_COLUMN]
@@ -503,6 +511,7 @@ def _load_supervised_training_parts(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, str, bool, str | None, int | None, int | None, int | None]:
     training_frame = _load_training_frame(
         use_hourly_aggregation=use_hourly_aggregation,
@@ -511,6 +520,7 @@ def _load_supervised_training_parts(
         row_limit=row_limit,
         require_labels=True,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
     label_source = str(training_frame.attrs.get("label_source", DATABASE_LABEL_SOURCE))
     hourly_aggregation = bool(training_frame.attrs.get("hourly_aggregation", False))
@@ -710,6 +720,7 @@ def train_and_save_model(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ):
     return train_and_save_random_forest(
         model_path=model_path,
@@ -719,6 +730,7 @@ def train_and_save_model(
         aggregation_minutes=aggregation_minutes,
         row_limit=row_limit,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
 
 
@@ -730,6 +742,7 @@ def train_and_save_random_forest(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ):
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -752,6 +765,7 @@ def train_and_save_random_forest(
         aggregation_minutes=aggregation_minutes,
         row_limit=row_limit,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
     evaluation_model = RandomForestClassifier(n_estimators=100, random_state=42)
     evaluation = None
@@ -840,6 +854,7 @@ def train_and_save_svm(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ):
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -869,6 +884,7 @@ def train_and_save_svm(
         aggregation_minutes=aggregation_minutes,
         row_limit=row_limit,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
     evaluation = None
     if label_source == DATABASE_LABEL_SOURCE:
@@ -999,6 +1015,7 @@ def train_and_save_isolation_forest(
     aggregation_hours: int = 24,
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
+    device_identifier: str | None = None,
 ):
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1011,6 +1028,7 @@ def train_and_save_isolation_forest(
         aggregation_minutes=aggregation_minutes,
         row_limit=row_limit,
         require_labels=False,
+        device_identifier=device_identifier,
     )
     X = training_frame[FEATURE_COLUMNS]
     model, evolution = _train_isolation_forest_with_evolution(X)

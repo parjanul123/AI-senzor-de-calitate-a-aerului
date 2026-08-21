@@ -183,6 +183,10 @@ def get_measurements(
     descending: bool = True,
     raise_on_error: bool = False,
 ) -> pd.DataFrame:
+    # When filtering by device the limit must be applied after filtering, otherwise the
+    # newest N global rows may contain no row for the requested device.
+    fetch_limit = None if device_identifier else limit
+
     client = _create_supabase_client()
     if client is None:
         if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
@@ -193,7 +197,7 @@ def get_measurements(
                 )
             return pd.DataFrame()
         try:
-            records = _fetch_measurements_via_rest(limit=limit, descending=descending)
+            records = _fetch_measurements_via_rest(limit=fetch_limit, descending=descending)
         except Exception as exc:
             logger.exception("Failed to fetch data from Supabase table 'measurements' via REST fallback: %s", exc)
             if raise_on_error:
@@ -203,7 +207,7 @@ def get_measurements(
             return pd.DataFrame()
     else:
         try:
-            records = _fetch_measurements_records(client, limit=limit, descending=descending)
+            records = _fetch_measurements_records(client, limit=fetch_limit, descending=descending)
         except Exception as exc:
             logger.exception("Failed to fetch data from Supabase table 'measurements': %s", exc)
             if raise_on_error:
@@ -230,6 +234,8 @@ def get_measurements(
         dataframe = dataframe[
             dataframe["device_identifier"].astype(str).str.strip().str.lower() == requested
         ]
+        if limit is not None:
+            dataframe = dataframe.head(int(limit))
 
     return dataframe.reset_index(drop=True)
 

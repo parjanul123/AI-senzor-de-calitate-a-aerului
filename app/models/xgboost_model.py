@@ -175,6 +175,7 @@ def load_xgboost_training_data(
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
     return_metadata: bool = False,
+    device_identifier: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series] | tuple[pd.DataFrame, pd.Series, pd.DataFrame, dict[str, object]]:
     """Load labeled measurements through the existing shared training loader."""
     training_frame = _load_training_frame(
@@ -184,6 +185,7 @@ def load_xgboost_training_data(
         row_limit=row_limit,
         require_labels=True,
         allow_derived_label_fallback=allow_derived_label_fallback,
+        device_identifier=device_identifier,
     )
     
     # Adaptive column detection
@@ -316,6 +318,7 @@ def train_and_save_xgboost(
     aggregation_minutes: int | None = None,
     row_limit: int = LATEST_TRAINING_ROWS,
     allow_derived_label_fallback: bool = False,
+    device_identifier: str | None = None,
 ) -> tuple[XGBoostModel, dict] | XGBoostModel:
     """Train XGBoost on measurements and persist it to models/xgboost.pkl by default."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -329,6 +332,7 @@ def train_and_save_xgboost(
         row_limit=row_limit,
         allow_derived_label_fallback=allow_derived_label_fallback,
         return_metadata=True,
+        device_identifier=device_identifier,
     )
     model = XGBoostModel().fit(X, y)
     joblib.dump(model, target_path)
