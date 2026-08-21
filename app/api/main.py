@@ -125,16 +125,28 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=4_000)
+    message: Optional[str] = Field(default=None, min_length=1, max_length=4_000)
+    text: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=4_000,
+        description="Alias pentru 'message' folosit de unele integrari externe.",
+    )
     history: list[ChatMessage] = Field(default_factory=list, max_length=12)
     device_identifier: Optional[str] = Field(
         default=None,
         description="Raspunde folosind doar datele dispozitivului selectat.",
     )
+    selected: Optional[str] = Field(
+        default=None,
+        description="Alias pentru 'device_identifier' folosit de unele integrari externe.",
+    )
 
 
 class ChatResponse(BaseModel):
     reply: str
+    text: str
+    selected: Optional[str] = None
 
 
 @app.get("/health")
@@ -517,14 +529,23 @@ def detect_anomaly(
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+    message = (request.message or request.text or "").strip()
+    if not message:
+        raise HTTPException(
+            status_code=422,
+            detail="Câmpul 'message' (sau aliasul 'text') este obligatoriu.",
+        )
+
+    resolved_device_identifier = (request.device_identifier or request.selected or "").strip() or None
+
     model_outputs = {
         "latest_prediction": getattr(app.state, "latest_prediction", None),
         "latest_training": getattr(app.state, "latest_training", None),
     }
     reply = get_chatbot_reply(
-        request.message,
+        message,
         model_outputs=model_outputs,
         conversation_history=[chat_message.model_dump() for chat_message in request.history],
-        device_identifier=request.device_identifier,
+        device_identifier=resolved_device_identifier,
     )
-    return ChatResponse(reply=reply)
+    return ChatResponse(reply=reply, text=reply, selected=resolved_device_identifier)
