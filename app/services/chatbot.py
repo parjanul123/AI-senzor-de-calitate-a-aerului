@@ -232,6 +232,7 @@ class ChatbotContext:
 
     latest_measurement: dict[str, Any] | None = None
     model_outputs: dict[str, Any] | None = None
+    selected_device_identifier: str | None = None
 
 
 class RuleBasedAirQualityChatbot:
@@ -258,6 +259,30 @@ class RuleBasedAirQualityChatbot:
         return ChatbotContext(
             latest_measurement=latest_measurement,
             model_outputs=model_outputs or {},
+            selected_device_identifier=device_identifier,
+        )
+
+    @staticmethod
+    def is_location_question(normalized_message: str) -> bool:
+        location_markers = [
+            "unde",
+            "locatie",
+            "locație",
+            "amplasat",
+            "pozitie",
+            "poziție",
+            "coordonate",
+            "gps",
+            "latitudine",
+            "longitudine",
+            "oras",
+            "oraș",
+            "adresa",
+            "adresă",
+        ]
+        device_markers = ["dispozitiv", "device", "senzor", "camera", "cameră"]
+        return any(token in normalized_message for token in location_markers) and any(
+            token in normalized_message for token in device_markers
         )
 
     @staticmethod
@@ -319,6 +344,9 @@ class RuleBasedAirQualityChatbot:
                 f"{WELCOME_MESSAGE} "
                 "Vreau să știu cu ce te pot ajuta."
             )
+
+        if self.is_location_question(normalized):
+            return self._format_device_location_reply(context)
 
         if self.is_live_data_question(normalized):
             return self._format_live_status_reply(context, normalized)
@@ -534,6 +562,79 @@ class RuleBasedAirQualityChatbot:
         return (
             "Ultima măsurătoare disponibilă este: "
             f"temperatură={temperature}, umiditate={humidity}, CO2={co2}, PM2.5={pm25}, PM10={pm10}."
+        )
+
+    @staticmethod
+    def _extract_location_details(measurement: dict[str, Any]) -> tuple[str | None, float | None, float | None]:
+        text_candidates = ["location", "location_name", "locatie", "city", "address", "device_location"]
+        lat_candidates = ["latitude", "lat", "gps_lat", "device_latitude"]
+        lon_candidates = ["longitude", "lon", "lng", "gps_lng", "device_longitude"]
+
+        location_text = None
+        for key in text_candidates:
+            value = measurement.get(key)
+            if value is not None and str(value).strip() != "":
+                location_text = str(value).strip()
+                break
+
+        latitude = None
+        for key in lat_candidates:
+            value = measurement.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            try:
+                latitude = float(value)
+                break
+            except (TypeError, ValueError):
+                continue
+
+        longitude = None
+        for key in lon_candidates:
+            value = measurement.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            try:
+                longitude = float(value)
+                break
+            except (TypeError, ValueError):
+                continue
+
+        return location_text, latitude, longitude
+
+    @staticmethod
+    def _format_device_location_reply(context: ChatbotContext) -> str:
+        measurement = context.latest_measurement
+        selected_device = context.selected_device_identifier
+
+        if measurement is None:
+            if selected_device:
+                return (
+                    f"Nu am găsit măsurători recente pentru dispozitivul '{selected_device}', "
+                    "deci nu pot determina locația momentan."
+                )
+            return "Nu am găsit măsurători recente, deci nu pot determina locația dispozitivului."
+
+        device_identifier = str(measurement.get("device_identifier") or selected_device or "dispozitivul selectat").strip()
+        location_text, latitude, longitude = RuleBasedAirQualityChatbot._extract_location_details(measurement)
+
+        if location_text and latitude is not None and longitude is not None:
+            return (
+                f"Dispozitivul '{device_identifier}' este în '{location_text}', "
+                f"la coordonatele {latitude:.5f}, {longitude:.5f}."
+            )
+
+        if location_text:
+            return f"Dispozitivul '{device_identifier}' este în '{location_text}'."
+
+        if latitude is not None and longitude is not None:
+            return (
+                f"Dispozitivul '{device_identifier}' are coordonatele "
+                f"{latitude:.5f}, {longitude:.5f}."
+            )
+
+        return (
+            f"Pentru dispozitivul '{device_identifier}' nu am încă informații de locație "
+            "(nici text, nici coordonate GPS)."
         )
 
     @staticmethod
@@ -952,6 +1053,7 @@ class RuleBasedAirQualityChatbot:
 def _serialize_chat_context(context: ChatbotContext) -> dict[str, Any]:
     return {
         "latest_measurement": context.latest_measurement,
+        "selected_device_identifier": context.selected_device_identifier,
         "latest_prediction": (context.model_outputs or {}).get("latest_prediction"),
         "latest_training": (context.model_outputs or {}).get("latest_training"),
         "reference_ranges": AIR_QUALITY_REFERENCE,
@@ -1076,6 +1178,7 @@ def get_chatbot_reply(
 
     normalized = (message or "").strip().lower()
     is_live_question = chatbot.is_live_data_question(normalized)
+    is_location_question = chatbot.is_location_question(normalized)
     if is_live_question:
         model_outputs = model_outputs if model_outputs is not None else {}
         chatbot.try_build_live_prediction(model_outputs, device_identifier=device_identifier)
@@ -1112,7 +1215,7 @@ def get_chatbot_reply(
         device_identifier=device_identifier,
     )
 
-    if is_live_question:
+    if is_live_question or is_location_question:
         return chatbot.generate_reply(message=message, context=context)
 
     llm_reply = _generate_ollama_reply(

@@ -110,3 +110,42 @@ def test_chatbot_extracts_only_pm10_from_pm_10_question():
     assert "PM1" in reply
     assert "PM10" in reply
     assert "PM2.5" not in reply
+
+
+def test_chatbot_answers_device_location_from_latest_measurement(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([
+            {
+                "device_identifier": "dev-1",
+                "location": "Laborator 2",
+                "latitude": 44.4321,
+                "longitude": 26.1039,
+            }
+        ]),
+    )
+
+    reply = get_chatbot_reply(
+        "Unde se afla dispozitivul?",
+        device_identifier="dev-1",
+    )
+
+    assert "Laborator 2" in reply
+    assert "44.43210" in reply
+    assert "26.10390" in reply
+
+
+def test_chatbot_reports_missing_location_for_selected_device(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame(),
+    )
+
+    reply = get_chatbot_reply("Unde este senzorul?", device_identifier="dev-x")
+
+    assert "dev-x" in reply
+    assert "nu pot determina locația" in reply.lower()
