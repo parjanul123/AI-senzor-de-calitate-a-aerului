@@ -436,6 +436,20 @@ class RuleBasedAirQualityChatbot:
         has_sensor = any(token in normalized_message for token in LIVE_FEATURE_ALIASES)
         return has_sensor or bool(detect_sensor_features(normalized_message))
 
+    # Any of these intents need a live prediction to answer properly, so the
+    # chatbot should fetch one automatically instead of asking the user to run it.
+    _PREDICTION_TRIGGER_TOKENS = (
+        "anomal", "anomalie", "ciudat", "neobișnuit",
+        "pm2.5", "pm25", "pm10", "particule",
+        "co2", "dioxid", "ventilatie", "ventilație", "aer proaspat",
+        "predict", "predic", "forecast", "prognoza", "prognoză", "stare",
+        "recomand", "recomandare", "ce trebuie", "ar trebui",
+    )
+
+    @classmethod
+    def needs_live_prediction(cls, normalized_message: str) -> bool:
+        return any(token in normalized_message for token in cls._PREDICTION_TRIGGER_TOKENS)
+
     @staticmethod
     def _requested_live_features(normalized_message: str) -> list[str]:
         features: list[str] = []
@@ -1329,8 +1343,11 @@ def _build_ollama_messages(
     system_prompt = (
         "Ești asistentul Air Quality AI. Răspunzi în română naturală, prietenoasă și clară. "
         "Răspunsul trebuie să aibă 2-5 propoziții, fără jargon inutil și fără ton robotic. "
-        "Folosești doar datele din context. Dacă datele lipsesc, spui explicit ce lipsește "
-        "și recomanzi utilizatorului să ruleze Predict sau Train. "
+        "Folosești doar datele din context. Contextul conține deja cea mai recentă predicție "
+        "disponibilă (latest_prediction), obținută automat pentru tine — NU cere niciodată "
+        "utilizatorului să ruleze Predict dacă latest_prediction există deja în context, "
+        "ci răspunde direct folosind acele valori (inclusiv pentru anomalii, recomandări, PM2.5 sau CO2). "
+        "Cere rularea Predict/Train doar dacă informația relevantă lipsește cu adevărat din context. "
         "Pentru întrebări conceptuale (unități, praguri, intervale), folosești reference_ranges "
         "și NU răspunzi că lipsesc datele dacă informația există în reference_ranges. "
         "Închide răspunsul, când are sens, cu o întrebare scurtă de continuare."
@@ -1356,6 +1373,13 @@ def _build_ollama_messages(
         "Vrei sa-ti explic si ppm pentru CO2?"
     )
 
+    few_shot_user_4 = "Detectează anomalii"
+    few_shot_assistant_4 = (
+        "Am verificat valorile curente din latest_prediction și nu văd abateri majore față de intervalele normale. "
+        "Toți indicatorii (temperatură, umiditate, PM2.5, CO2) se încadrează în limite obișnuite. "
+        "Vrei să-ți arăt și recomandările pe baza acestor date?"
+    )
+
     live_user_payload = (
         "Mesaj utilizator:\n"
         f"{message}\n\n"
@@ -1371,6 +1395,8 @@ def _build_ollama_messages(
         {"role": "assistant", "content": few_shot_assistant_2},
         {"role": "user", "content": few_shot_user_3},
         {"role": "assistant", "content": few_shot_assistant_3},
+        {"role": "user", "content": few_shot_user_4},
+        {"role": "assistant", "content": few_shot_assistant_4},
     ]
     for history_message in (conversation_history or [])[-12:]:
         role = history_message.get("role")
@@ -1437,7 +1463,7 @@ def get_chatbot_reply(
     normalized = (message or "").strip().lower()
     is_live_question = chatbot.is_live_data_question(normalized)
     is_location_question = chatbot.is_location_question(normalized)
-    if is_live_question:
+    if is_live_question or chatbot.needs_live_prediction(normalized):
         model_outputs = model_outputs if model_outputs is not None else {}
         chatbot.try_build_live_prediction(model_outputs, device_identifier=device_identifier)
     detected_topics = chatbot.detect_reference_topics(normalized)
