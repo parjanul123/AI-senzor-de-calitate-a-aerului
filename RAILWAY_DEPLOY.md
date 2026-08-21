@@ -56,6 +56,34 @@ După fiecare push pe `main`, Railway va redeploya automat ambele servicii.
 
 ---
 
+## Serviciu opțional: Ollama (chatbot cu LLM real în producție)
+
+Local, chatbot-ul folosește Ollama de pe `127.0.0.1:11434`. Pe Railway acel Ollama local nu e
+accesibil, de-aia `.env.railway` are `CHATBOT_USE_OLLAMA=false` și chatbot-ul cade pe
+răspunsurile bazate pe reguli. Ca să ai același LLM și în producție:
+
+1. În același proiect Railway, creează un al treilea serviciu **New → GitHub Repo** (același
+   repo), cu Dockerfile Path setat la `Dockerfile.ollama`.
+2. Nu genera domeniu public pentru acest serviciu — rămâne accesibil doar intern, prin
+   rețeaua privată Railway (`<nume-serviciu>.railway.internal`).
+3. Atenție la resurse: modelul implicit din `Dockerfile.ollama` e `qwen2.5:3b-instruct`
+   (mai mic, rulează pe planuri mai ieftine). Un model de 7B necesită un plan cu minim
+   6-8GB RAM. Poți schimba modelul prin variabila `OLLAMA_MODEL` din acel serviciu.
+4. Adaugă un **Volume** montat pe `/root/.ollama` pentru serviciul Ollama, ca modelul
+   descărcat să nu se piardă la fiecare redeploy (altfel se re-descarcă de fiecare dată,
+   ceea ce încetinește pornirea).
+5. Pe serviciul `backend`, la **Variables**, setează:
+
+```text
+CHATBOT_USE_OLLAMA=true
+OLLAMA_BASE_URL=http://<nume-serviciu-ollama>.railway.internal:11434
+OLLAMA_MODEL=qwen2.5:3b-instruct
+```
+
+Folosește exact numele serviciului Ollama din Railway în loc de `<nume-serviciu-ollama>`.
+
+---
+
 ## Deploy API separat
 
 ### Opțiunea A: Deploy via GitHub (Recomandată)

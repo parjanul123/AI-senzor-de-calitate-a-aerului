@@ -1,0 +1,17 @@
+# Standalone Ollama service for Railway, so the chatbot can use the real LLM in production
+# (not just the local dev machine). Deploy this as its own Railway service, pointing
+# "Dockerfile Path" to this file, then set OLLAMA_BASE_URL on the backend service to its
+# internal Railway URL (e.g. http://ollama.railway.internal:11434).
+FROM ollama/ollama:latest
+
+# Pick a model that fits your Railway plan's RAM. A 7B model needs ~6-8GB RAM;
+# a 3B model (default here) runs comfortably on smaller/cheaper plans.
+ENV OLLAMA_MODEL=qwen2.5:3b-instruct
+ENV OLLAMA_HOST=0.0.0.0:11434
+
+COPY ollama-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 11434
+
+ENTRYPOINT ["/entrypoint.sh"]
