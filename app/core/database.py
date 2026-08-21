@@ -461,15 +461,27 @@ def _lookup_location_via_rest(identifiers: list[str]) -> Optional[dict[str, Any]
     return None
 
 
-def get_device_location_details(device_identifier: str | None) -> Optional[dict[str, Any]]:
+def get_device_location_details(
+    device_identifier: str | None,
+    aliases: list[str] | None = None,
+) -> Optional[dict[str, Any]]:
     requested_identifier = (device_identifier or "").strip()
-    if not requested_identifier:
+    if not requested_identifier and not aliases:
         return None
 
-    identifier_candidates = [requested_identifier]
+    identifier_candidates: list[str] = []
+    if requested_identifier:
+        identifier_candidates.append(requested_identifier)
+    for alias in aliases or []:
+        alias_value = str(alias).strip()
+        if alias_value and alias_value not in identifier_candidates:
+            identifier_candidates.append(alias_value)
+
+    if not identifier_candidates:
+        return None
 
     # Fast path: if measurements already include location, use the newest row.
-    dataframe = get_measurements(device_identifier=requested_identifier, limit=1, descending=True)
+    dataframe = get_measurements(device_identifier=requested_identifier or identifier_candidates[0], limit=1, descending=True)
     if not dataframe.empty:
         row = dataframe.iloc[0].to_dict()
 

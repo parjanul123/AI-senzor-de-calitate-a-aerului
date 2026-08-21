@@ -160,7 +160,7 @@ def test_chatbot_uses_location_table_when_measurement_has_no_location(monkeypatc
     )
     monkeypatch.setattr(
         "app.services.chatbot.get_device_location_details",
-        lambda device_identifier: {
+        lambda device_identifier, aliases=None: {
             "location": "Depozit Nord",
             "latitude": 46.7712,
             "longitude": 23.6236,
@@ -215,3 +215,68 @@ def test_chatbot_reports_capabilities_and_device_count(monkeypatch):
 
     assert "funcțiile principale" in reply or "funcțiile" in reply
     assert "1 dispozitive" in reply
+
+
+def test_chatbot_answers_short_location_question_when_device_is_selected(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"device_identifier": "dev-55"}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.get_device_location_details",
+        lambda device_identifier, aliases=None: {
+            "location": "Camera server",
+            "latitude": None,
+            "longitude": None,
+            "source_table": "devices",
+            "source_id_column": "device_id",
+        },
+    )
+
+    reply = get_chatbot_reply("unde e?", device_identifier="dev-55")
+
+    assert "Camera server" in reply
+
+
+def test_chatbot_forecast_question_for_specific_parameter(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([
+            {
+                "device_identifier": "dev-88",
+                "temperature": 24.0,
+                "humidity": 52.0,
+                "pm25": 14.0,
+                "pm10": 22.0,
+                "co2": 810.0,
+            }
+        ]),
+    )
+    monkeypatch.setattr("app.services.chatbot.get_devices_with_location", lambda: [])
+    monkeypatch.setattr(
+        "app.services.chatbot.build_forecast",
+        lambda **kwargs: [
+            {
+                "horizon_hours": 6,
+                "prediction": "good",
+                "confidence": 0.82,
+                "input_values": {
+                    "temperature": 24.6,
+                    "humidity": 50.5,
+                    "pm25": 16.2,
+                    "pm10": 24.0,
+                    "co2": 845.0,
+                },
+            }
+        ],
+    )
+
+    reply = get_chatbot_reply("Cat va fi CO2 peste 6 ore?", device_identifier="dev-88")
+
+    assert "peste 6 ore" in reply.lower()
+    assert "co2" in reply.lower()
+    assert "845.00" in reply

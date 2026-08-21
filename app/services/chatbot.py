@@ -21,7 +21,7 @@ from app.core.config import (
 )
 from app.core.database import get_device_location_details, get_devices_with_location, get_measurements
 from app.services.bert_sensor_detector import detect_sensor_features
-from app.services.predictor import predict_air_quality
+from app.services.predictor import build_forecast, predict_air_quality
 
 
 WELCOME_MESSAGE = "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului."
@@ -260,8 +260,23 @@ class RuleBasedAirQualityChatbot:
                 latest_measurement = self._extract_latest_measurement(df)
 
         with suppress(RuntimeError, ValueError, KeyError, TypeError):
-            if device_identifier:
-                location_details = get_device_location_details(device_identifier)
+            location_aliases: list[str] = []
+            if latest_measurement is not None:
+                for key in ("device_id", "deviceId", "sensor_id", "sensorId", "device_name", "name"):
+                    raw_value = latest_measurement.get(key)
+                    if raw_value is None:
+                        continue
+                    value = str(raw_value).strip()
+                    if value and value not in location_aliases:
+                        location_aliases.append(value)
+
+            lookup_identifier = device_identifier
+            if lookup_identifier is None and latest_measurement is not None:
+                measurement_identifier = str(latest_measurement.get("device_identifier") or "").strip()
+                lookup_identifier = measurement_identifier or None
+
+            if lookup_identifier:
+                location_details = get_device_location_details(lookup_identifier, aliases=location_aliases)
 
         with suppress(RuntimeError, ValueError, KeyError, TypeError):
             available_devices = get_devices_with_location()
@@ -345,6 +360,70 @@ class RuleBasedAirQualityChatbot:
         return has_location_marker and has_device_marker
 
     @staticmethod
+    def has_location_markers(normalized_message: str) -> bool:
+        return any(
+            token in normalized_message
+            for token in ["unde", "locatie", "locație", "coordonate", "gps", "latitudine", "longitudine"]
+        )
+
+    @staticmethod
+    def is_forecast_question(normalized_message: str) -> bool:
+        forecast_markers = ["peste", "ore", "ora", "forecast", "prognoza", "prognoză", "va fi", "cat va fi", "cât va fi"]
+        return any(token in normalized_message for token in forecast_markers)
+
+    @staticmethod
+    def _extract_forecast_horizon_hours(normalized_message: str) -> int | None:
+        match = re.search(r"peste\s+(\d{1,3})\s*(?:ore|ora|h)", normalized_message)
+        if match:
+            return max(1, int(match.group(1)))
+
+        match = re.search(r"(?:in|în)\s+(\d{1,3})\s*(?:ore|ora|h)", normalized_message)
+        if match:
+            return max(1, int(match.group(1)))
+
+        return None
+
+    @staticmethod
+    def _extract_forecast_feature(normalized_message: str) -> str | None:
+        feature_aliases = {
+            "temperature": ["temperatura", "temperatură", "temperature", "temp"],
+            "humidity": ["umiditate", "humidity"],
+            "pm25": ["pm2.5", "pm25", "pm 2.5"],
+            "pm10": ["pm10", "pm 10", "praf"],
+            "co2": ["co2", "co₂", "dioxid"],
+        }
+        for feature_name, aliases in feature_aliases.items():
+            if any(alias in normalized_message for alias in aliases):
+                return feature_name
+        return None
+
+    @staticmethod
+    def _extract_base_feature_values_from_measurement(measurement: dict[str, Any]) -> dict[str, float] | None:
+        feature_fields = {
+            "temperature": ("temperature", "temperatura", "temp"),
+            "humidity": ("humidity", "umiditate"),
+            "pm25": ("pm25", "pm2_5", "pm2.5"),
+            "pm10": ("pm10",),
+            "co2": ("co2", "co_2"),
+        }
+
+        base_values: dict[str, float] = {}
+        for feature_name, candidates in feature_fields.items():
+            found_value = None
+            for candidate in candidates:
+                if candidate in measurement and measurement[candidate] is not None and str(measurement[candidate]).strip() != "":
+                    try:
+                        found_value = float(measurement[candidate])
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            if found_value is None:
+                return None
+            base_values[feature_name] = found_value
+
+        return base_values
+
+    @staticmethod
     def is_live_data_question(normalized_message: str) -> bool:
         current_markers = [
             "acum", "actual", "actuala", "camera mea", "in camera", "în cameră",
@@ -404,8 +483,15 @@ class RuleBasedAirQualityChatbot:
                 "Vreau să știu cu ce te pot ajuta."
             )
 
-        if self.is_location_question(normalized):
+        if self.is_location_question(normalized) or (
+            context.selected_device_identifier is not None and self.has_location_markers(normalized)
+        ):
             return self._format_device_location_reply(context)
+
+        if self.is_forecast_question(normalized):
+            forecast_reply = self._format_forecast_question_reply(context, normalized)
+            if forecast_reply:
+                return forecast_reply
 
         if self.is_devices_question(normalized):
             return self._format_devices_catalog_reply(context)
@@ -700,6 +786,73 @@ class RuleBasedAirQualityChatbot:
         return (
             f"Pentru dispozitivul '{device_identifier}' nu am încă informații de locație "
             "(nici text, nici coordonate GPS)."
+        )
+
+    @staticmethod
+    def _format_forecast_question_reply(context: ChatbotContext, normalized_message: str) -> str | None:
+        horizon_hours = RuleBasedAirQualityChatbot._extract_forecast_horizon_hours(normalized_message)
+        if horizon_hours is None:
+            return None
+
+        requested_feature = RuleBasedAirQualityChatbot._extract_forecast_feature(normalized_message)
+        if requested_feature is None:
+            return (
+                "Pot calcula prognoza, dar spune-mi și parametrul dorit (ex: temperatură, umiditate, PM2.5, PM10, CO2)."
+            )
+
+        measurement = context.latest_measurement
+        if measurement is None:
+            return "Nu am o măsurătoare curentă pentru a calcula prognoza."
+
+        base_values = RuleBasedAirQualityChatbot._extract_base_feature_values_from_measurement(measurement)
+        if base_values is None:
+            return "Nu am toate valorile de bază necesare pentru prognoză (temperatură, umiditate, PM2.5, PM10, CO2)."
+
+        try:
+            forecast = build_forecast(
+                base_feature_values=base_values,
+                horizons_hours=[horizon_hours],
+                lookback_hours=max(24, min(720, horizon_hours * 4)),
+                device_identifier=context.selected_device_identifier,
+            )
+        except RuntimeError as exc:
+            return f"Nu pot calcula prognoza acum: {exc}"
+        except Exception:
+            return "A apărut o eroare la calculul prognozei pentru întrebarea ta."
+
+        if not forecast:
+            return "Nu am putut genera prognoza pentru intervalul cerut."
+
+        first_point = forecast[0]
+        values = first_point.get("input_values") or {}
+        if requested_feature not in values:
+            return "Prognoza a fost generată, dar parametrul cerut nu este disponibil în rezultat."
+
+        feature_name = {
+            "temperature": "temperatura",
+            "humidity": "umiditatea",
+            "pm25": "PM2.5",
+            "pm10": "PM10",
+            "co2": "CO2",
+        }[requested_feature]
+        feature_unit = {
+            "temperature": "°C",
+            "humidity": "%",
+            "pm25": "µg/m³",
+            "pm10": "µg/m³",
+            "co2": "ppm",
+        }[requested_feature]
+
+        predicted_value = float(values[requested_feature])
+        quality_prediction = first_point.get("prediction")
+        confidence = first_point.get("confidence")
+        confidence_text = ""
+        if isinstance(confidence, (int, float)):
+            confidence_text = f" (încredere {float(confidence):.1%})"
+
+        return (
+            f"Peste {horizon_hours} ore, estimarea pentru {feature_name} este {predicted_value:.2f} {feature_unit}. "
+            f"Predicția generală a calității aerului: {quality_prediction}{confidence_text}."
         )
 
     @staticmethod
