@@ -9,6 +9,7 @@ import requests
 
 from app.core.config import (
     CHATBOT_USE_OLLAMA,
+    CHATBOT_ENABLE_LEARNING,
     CHATBOT_ENABLE_WEB_SEARCH,
     CHATBOT_WEB_SEARCH_MAX_SNIPPETS,
     CHATBOT_WEB_SEARCH_TIMEOUT_SECONDS,
@@ -19,8 +20,14 @@ from app.core.config import (
     OLLAMA_TIMEOUT_SECONDS,
     OLLAMA_TOP_P,
 )
-from app.core.database import get_device_location_details, get_devices_with_location, get_measurements
-from app.services.bert_sensor_detector import detect_sensor_features, get_bert_model_name
+from app.core.database import (
+    get_chatbot_notes,
+    get_device_location_details,
+    get_devices_with_location,
+    get_measurements,
+    save_chatbot_note,
+)
+from app.services.bert_sensor_detector import detect_sensor_features
 from app.services.predictor import build_forecast, predict_air_quality
 
 
@@ -225,6 +232,38 @@ REFERENCE_CODE_ALIASES: dict[str, str] = {
     "sh": "sh",
 }
 
+# Phrases the user can use to explicitly teach the chatbot something to remember.
+TEACHING_TRIGGER_PHRASES: tuple[str, ...] = (
+    "ține minte", "tine minte",
+    "reține că", "retine ca", "reține ca", "retine că",
+    "memorează", "memoreaza",
+    "notează că", "noteaza ca", "notează ca", "noteaza că",
+    "să reții", "sa retii", "sa retin", "să rețin",
+    "vreau să știi că", "vreau sa stii ca",
+    "de acum încolo", "de acum incolo",
+    "regulă:", "regula:",
+)
+
+# A conditional instruction like "daca X e deconectat, verifica Y" is also treated as
+# something to learn, even without an explicit "ține minte" trigger phrase.
+CONDITIONAL_INSTRUCTION_PATTERN = re.compile(
+    r"dac[ăa]\b.{0,120}\b(verific\w*|check\w*|uit[ăa]\w*|resetea\w*|reporne\w*|schimb\w*)"
+)
+
+# Tokens that indicate the user is reporting a problem with a sensor/device, so any
+# previously learned instructions about that situation should be recalled automatically.
+SENSOR_PROBLEM_TOKENS: tuple[str, ...] = (
+    "decuplat", "deconectat", "deconectata", "deconectată",
+    "offline", "nu functioneaza", "nu funcționează", "nu merge",
+    "nu raspunde", "nu răspunde", "senzor mort", "eroare senzor", "cablu",
+)
+
+_NOTE_STOPWORDS: frozenset[str] = frozenset({
+    "daca", "dacă", "atunci", "pentru", "despre", "acest", "aceasta", "acesta",
+    "este", "sunt", "care", "cand", "când", "unde", "cum", "sau", "din",
+    "verifica", "verifică", "senzor", "senzorul", "senzorii", "device", "dispozitiv",
+})
+
 
 @dataclass
 class ChatbotContext:
@@ -234,6 +273,7 @@ class ChatbotContext:
     model_outputs: dict[str, Any] | None = None
     selected_device_identifier: str | None = None
     available_devices: list[dict[str, Any]] | None = None
+    learned_notes: list[dict[str, Any]] | None = None
 
 
 class RuleBasedAirQualityChatbot:
@@ -323,6 +363,43 @@ class RuleBasedAirQualityChatbot:
             "ce știi să faci",
         ]
         return any(token in normalized_message for token in capability_markers)
+
+    @staticmethod
+    def is_teaching_message(normalized_message: str) -> bool:
+        if any(phrase in normalized_message for phrase in TEACHING_TRIGGER_PHRASES):
+            return True
+        return bool(CONDITIONAL_INSTRUCTION_PATTERN.search(normalized_message))
+
+    @staticmethod
+    def extract_taught_note(original_message: str, normalized_message: str) -> str:
+        for phrase in TEACHING_TRIGGER_PHRASES:
+            index = normalized_message.find(phrase)
+            if index != -1:
+                remainder = original_message[index + len(phrase):].strip(" :,-")
+                return remainder or original_message.strip()
+        return original_message.strip()
+
+    @staticmethod
+    def _note_keywords(text: str) -> set[str]:
+        words = re.findall(r"[a-zăâîșț0-9]+", text.lower())
+        return {word for word in words if len(word) >= 4 and word not in _NOTE_STOPWORDS}
+
+    @staticmethod
+    def find_relevant_notes(
+        normalized_message: str,
+        notes: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        message_keywords = RuleBasedAirQualityChatbot._note_keywords(normalized_message)
+        if not message_keywords:
+            return []
+
+        relevant: list[dict[str, Any]] = []
+        for note in notes:
+            note_text = str(note.get("note") or "")
+            note_keywords = RuleBasedAirQualityChatbot._note_keywords(note_text)
+            if message_keywords & note_keywords:
+                relevant.append(note)
+        return relevant
 
     @staticmethod
     def is_location_question(normalized_message: str) -> bool:
@@ -436,6 +513,20 @@ class RuleBasedAirQualityChatbot:
         has_sensor = any(token in normalized_message for token in LIVE_FEATURE_ALIASES)
         return has_sensor or bool(detect_sensor_features(normalized_message))
 
+    # Any of these intents need a live prediction to answer properly, so the
+    # chatbot should fetch one automatically instead of asking the user to run it.
+    _PREDICTION_TRIGGER_TOKENS = (
+        "anomal", "anomalie", "ciudat", "neobișnuit",
+        "pm2.5", "pm25", "pm10", "particule",
+        "co2", "dioxid", "ventilatie", "ventilație", "aer proaspat",
+        "predict", "predic", "forecast", "prognoza", "prognoză", "stare",
+        "recomand", "recomandare", "ce trebuie", "ar trebui",
+    )
+
+    @classmethod
+    def needs_live_prediction(cls, normalized_message: str) -> bool:
+        return any(token in normalized_message for token in cls._PREDICTION_TRIGGER_TOKENS)
+
     @staticmethod
     def _requested_live_features(normalized_message: str) -> list[str]:
         features: list[str] = []
@@ -468,7 +559,12 @@ class RuleBasedAirQualityChatbot:
             "device_identifier": device_identifier,
         }
 
-    def generate_reply(self, message: str, context: ChatbotContext) -> str:
+    def generate_reply(
+        self,
+        message: str,
+        context: ChatbotContext,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
         normalized = (message or "").strip().lower()
 
         if not normalized:
@@ -483,13 +579,24 @@ class RuleBasedAirQualityChatbot:
                 "Vreau să știu cu ce te pot ajuta."
             )
 
+        if any(token in normalized for token in SENSOR_PROBLEM_TOKENS):
+            relevant_notes = self.find_relevant_notes(normalized, context.learned_notes or [])
+            if relevant_notes:
+                tips = "; ".join(str(note.get("note")) for note in relevant_notes[:3])
+                return (
+                    f"Mi-ai spus anterior: {tips}. "
+                    "Verifică asta acum; spune-mi dacă problema persistă."
+                )
+
         if self.is_location_question(normalized) or (
             context.selected_device_identifier is not None and self.has_location_markers(normalized)
         ):
             return self._format_device_location_reply(context)
 
         if self.is_forecast_question(normalized):
-            forecast_reply = self._format_forecast_question_reply(context, normalized)
+            forecast_reply = self._format_forecast_question_reply(
+                context, normalized, conversation_history=conversation_history
+            )
             if forecast_reply:
                 return forecast_reply
 
@@ -579,7 +686,8 @@ class RuleBasedAirQualityChatbot:
                     "Nu s-a rulat încă vreo predicție. Mergi la tab-ul 'Predict' și apasă butonul pentru a-mi aduce date reale.",
                 ]
                 return random.choice(predict_tips)
-            return self._format_prediction_reply(prediction_payload)
+            reply_text = self._format_prediction_reply(prediction_payload)
+            return reply_text + self._device_scope_note(prediction_payload.get("device_identifier"))
 
         if any(token in normalized for token in ["training", "train", "antren", "model", "oob", "accuracy", "f1", "performant"]):
             training_payload = (context.model_outputs or {}).get("latest_training")
@@ -789,12 +897,32 @@ class RuleBasedAirQualityChatbot:
         )
 
     @staticmethod
-    def _format_forecast_question_reply(context: ChatbotContext, normalized_message: str) -> str | None:
+    def _find_forecast_feature_in_history(conversation_history: list[dict[str, str]] | None) -> str | None:
+        """Recall the last forecast/live feature the user mentioned, for follow-up questions like 'dar peste 3 ore?'."""
+        for history_message in reversed((conversation_history or [])[-12:]):
+            if history_message.get("role") != "user":
+                continue
+            content = (history_message.get("content") or "").strip().lower()
+            if not content:
+                continue
+            feature = RuleBasedAirQualityChatbot._extract_forecast_feature(content)
+            if feature is not None:
+                return feature
+        return None
+
+    @staticmethod
+    def _format_forecast_question_reply(
+        context: ChatbotContext,
+        normalized_message: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str | None:
         horizon_hours = RuleBasedAirQualityChatbot._extract_forecast_horizon_hours(normalized_message)
         if horizon_hours is None:
             return None
 
         requested_feature = RuleBasedAirQualityChatbot._extract_forecast_feature(normalized_message)
+        if requested_feature is None:
+            requested_feature = RuleBasedAirQualityChatbot._find_forecast_feature_in_history(conversation_history)
         if requested_feature is None:
             return (
                 "Pot calcula prognoza, dar spune-mi și parametrul dorit (ex: temperatură, umiditate, PM2.5, PM10, CO2)."
@@ -817,7 +945,7 @@ class RuleBasedAirQualityChatbot:
             )
         except RuntimeError as exc:
             return f"Nu pot calcula prognoza acum: {exc}"
-        except (ValueError, KeyError, TypeError, OSError):
+        except Exception:
             return "A apărut o eroare la calculul prognozei pentru întrebarea ta."
 
         if not forecast:
@@ -853,6 +981,7 @@ class RuleBasedAirQualityChatbot:
         return (
             f"Peste {horizon_hours} ore, estimarea pentru {feature_name} este {predicted_value:.2f} {feature_unit}. "
             f"Predicția generală a calității aerului: {quality_prediction}{confidence_text}."
+            f"{RuleBasedAirQualityChatbot._device_scope_note(context.selected_device_identifier)}"
         )
 
     @staticmethod
@@ -922,6 +1051,15 @@ class RuleBasedAirQualityChatbot:
             details.append(f"predicția modelului indică o calitate {label_names[prediction_label]}")
         suffix = f" {'; '.join(details).capitalize()}." if details else " Nu există încă o etichetă validă pentru această înregistrare."
         return f"Din ultima măsurătoare din baza de date: {'; '.join(values)}.{suffix}"
+
+    @staticmethod
+    def _device_scope_note(device_identifier: str | None) -> str:
+        if device_identifier:
+            return ""
+        return (
+            " (Nu ai specificat un dispozitiv anume, așa că am folosit datele agregate de pe toate dispozitivele."
+            " Spune-mi identificatorul unui dispozitiv dacă vrei rezultatul doar pentru acela.)"
+        )
 
     @staticmethod
     def _format_prediction_reply(prediction_payload: dict[str, Any]) -> str:
@@ -1304,6 +1442,7 @@ def _serialize_chat_context(context: ChatbotContext) -> dict[str, Any]:
         "latest_prediction": (context.model_outputs or {}).get("latest_prediction"),
         "latest_training": (context.model_outputs or {}).get("latest_training"),
         "reference_ranges": AIR_QUALITY_REFERENCE,
+        "learned_notes": [note.get("note") for note in (context.learned_notes or []) if note.get("note")],
     }
 
 
@@ -1318,10 +1457,23 @@ def _build_ollama_messages(
     system_prompt = (
         "Ești asistentul Air Quality AI. Răspunzi în română naturală, prietenoasă și clară. "
         "Răspunsul trebuie să aibă 2-5 propoziții, fără jargon inutil și fără ton robotic. "
-        "Folosești doar datele din context. Dacă datele lipsesc, spui explicit ce lipsește "
-        "și recomanzi utilizatorului să ruleze Predict sau Train. "
+        "Folosești doar datele din context. Contextul conține deja cea mai recentă predicție "
+        "disponibilă (latest_prediction), obținută automat pentru tine — NU cere niciodată "
+        "utilizatorului să ruleze Predict dacă latest_prediction există deja în context, "
+        "ci răspunde direct folosind acele valori (inclusiv pentru anomalii, recomandări, PM2.5 sau CO2). "
+        "Cere rularea Predict/Train doar dacă informația relevantă lipsește cu adevărat din context. "
+        "Dacă utilizatorul cere o predicție generală, fără să numească un singur parametru "
+        "(ex: 'vreau o predicție', 'cum e calitatea aerului'), rezumă TOATE valorile relevante din "
+        "input_values/feature_assessment (temperatură, umiditate, PM2.5, PM10, CO2), nu doar una singură. "
+        "Dacă utilizatorul întreabă despre un singur parametru (ex: doar PM2.5), poți răspunde punctual pe acela. "
+        "Ține cont de istoricul conversației: dacă un mesaj anterior a menționat un parametru sau un orizont de timp "
+        "(ex: 'peste 2 ore'), iar mesajul curent este un follow-up scurt (ex: 'dar peste 3 ore?'), presupune același "
+        "parametru și răspunde coerent, fără să spui că nu înțelegi contextul. "
         "Pentru întrebări conceptuale (unități, praguri, intervale), folosești reference_ranges "
         "și NU răspunzi că lipsesc datele dacă informația există în reference_ranges. "
+        "Contextul poate conține și learned_notes: instrucțiuni sau fapte pe care utilizatorul ți le-a spus anterior "
+        "(ex: ce să verifici când un senzor e deconectat). Dacă mesajul curent se leagă de un learned_note, "
+        "folosește-l ca sursă de adevăr și aplică-l direct, în loc să dai un răspuns generic sau să spui că nu știi. "
         "Închide răspunsul, când are sens, cu o întrebare scurtă de continuare."
     )
 
@@ -1338,11 +1490,25 @@ def _build_ollama_messages(
         "Dacă nu există rezultate de antrenare, rulează Train și revin cu acuratețe, precizie și F1."
     )
 
+    few_shot_user_2b = "Vreau o predicție"
+    few_shot_assistant_2b = (
+        "Din latest_prediction, calitatea aerului este momentan bună: temperatura și umiditatea sunt normale, "
+        "iar PM2.5, PM10 și CO2 se încadrează în limite obișnuite. "
+        "Vrei să detaliez vreunul dintre acești indicatori?"
+    )
+
     few_shot_user_3 = "Ce inseamna ug/m3?"
     few_shot_assistant_3 = (
         "µg/m³ inseamna micrograme pe metru cub, adica masa de particule din aer. "
         "La PM2.5, orientativ: sub 35 e bun, 35-55 moderat, peste 55 ridicat. "
         "Vrei sa-ti explic si ppm pentru CO2?"
+    )
+
+    few_shot_user_4 = "Detectează anomalii"
+    few_shot_assistant_4 = (
+        "Am verificat valorile curente din latest_prediction și nu văd abateri majore față de intervalele normale. "
+        "Toți indicatorii (temperatură, umiditate, PM2.5, CO2) se încadrează în limite obișnuite. "
+        "Vrei să-ți arăt și recomandările pe baza acestor date?"
     )
 
     live_user_payload = (
@@ -1358,8 +1524,12 @@ def _build_ollama_messages(
         {"role": "assistant", "content": few_shot_assistant_1},
         {"role": "user", "content": few_shot_user_2},
         {"role": "assistant", "content": few_shot_assistant_2},
+        {"role": "user", "content": few_shot_user_2b},
+        {"role": "assistant", "content": few_shot_assistant_2b},
         {"role": "user", "content": few_shot_user_3},
         {"role": "assistant", "content": few_shot_assistant_3},
+        {"role": "user", "content": few_shot_user_4},
+        {"role": "assistant", "content": few_shot_assistant_4},
     ]
     for history_message in (conversation_history or [])[-12:]:
         role = history_message.get("role")
@@ -1424,14 +1594,26 @@ def get_chatbot_reply(
     chatbot = RuleBasedAirQualityChatbot()
 
     normalized = (message or "").strip().lower()
+
+    if CHATBOT_ENABLE_LEARNING and chatbot.is_teaching_message(normalized):
+        note_text = chatbot.extract_taught_note(message, normalized)
+        if save_chatbot_note(note_text, device_identifier=device_identifier):
+            return (
+                f"Am reținut: \"{note_text}\". "
+                "Data viitoare când apare o situație similară, o să țin cont de asta automat."
+            )
+
     is_live_question = chatbot.is_live_data_question(normalized)
     is_location_question = chatbot.is_location_question(normalized)
-    if is_live_question:
+    # A forecast question (e.g. "cat va fi temperatura peste 2 ore") mentions a parameter name too,
+    # so it must win over the generic reference/definition lookup below instead of being intercepted.
+    is_forecast_question = chatbot.is_forecast_question(normalized)
+    if is_live_question or chatbot.needs_live_prediction(normalized):
         model_outputs = model_outputs if model_outputs is not None else {}
         chatbot.try_build_live_prediction(model_outputs, device_identifier=device_identifier)
     detected_topics = chatbot.detect_reference_topics(normalized)
 
-    if detected_topics and not is_live_question:
+    if detected_topics and not is_live_question and not is_forecast_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
@@ -1452,7 +1634,7 @@ def get_chatbot_reply(
         "ridicat",
         "bun",
     ]
-    if any(token in normalized for token in reference_intent_tokens) and not is_live_question:
+    if any(token in normalized for token in reference_intent_tokens) and not is_live_question and not is_forecast_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
@@ -1461,9 +1643,11 @@ def get_chatbot_reply(
         model_outputs=model_outputs,
         device_identifier=device_identifier,
     )
+    if CHATBOT_ENABLE_LEARNING:
+        context.learned_notes = get_chatbot_notes(device_identifier=device_identifier)
 
-    if is_live_question or is_location_question:
-        return chatbot.generate_reply(message=message, context=context)
+    if is_live_question or is_location_question or is_forecast_question:
+        return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
 
     llm_reply = _generate_ollama_reply(
         message=message,
@@ -1473,45 +1657,7 @@ def get_chatbot_reply(
     if llm_reply:
         return llm_reply
 
-    return chatbot.generate_reply(message=message, context=context)
-
-
-def get_chatbot_reply_details(
-    message: str,
-    model_outputs: dict[str, Any] | None = None,
-    conversation_history: list[dict[str, str]] | None = None,
-    device_identifier: str | None = None,
-) -> dict[str, Any]:
-    """Return the reply plus model-routing evidence for API clients and the UI."""
-    bert_feature = None
-    bert_available = False
-    bert_model = get_bert_model_name()
-    try:
-        bert_features = detect_sensor_features(message)
-        bert_feature = bert_features[0] if bert_features else None
-        bert_available = True
-    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
-        bert_available = False
-
-    reply = get_chatbot_reply(
-        message,
-        model_outputs=model_outputs,
-        conversation_history=conversation_history,
-        device_identifier=device_identifier,
-    )
-
-    models_used = ["rule_based_chatbot"]
-    if bert_available:
-        models_used.append("bert_sensor_intent")
-
-    return {
-        "reply": reply,
-        "models_used": models_used,
-        "bert_available": bert_available,
-        "bert_model": bert_model,
-        "bert_feature": bert_feature,
-        "response_engine": "ollama" if CHATBOT_USE_OLLAMA else "rule_based_chatbot",
-    }
+    return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
 
 
 def get_chatbot_welcome_message() -> str:

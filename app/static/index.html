@@ -182,16 +182,7 @@
         const output = document.getElementById('chat-output');
         const displayText = result.text || result.reply || 'Fără răspuns.';
         const displaySelected = result.selected ? `\n\nDispozitiv selectat: ${result.selected}` : '';
-        const displayModels = result.models_used?.length
-          ? `\n\nModele folosite: ${result.models_used.join(', ')}`
-          : '';
-        const displayBertFeature = result.bert_feature
-          ? `\nBERT a identificat: ${result.bert_feature}`
-          : '';
-        const displayBertModel = result.bert_model
-          ? `\nModel BERT configurat: ${result.bert_model}`
-          : '';
-        output.textContent = `${displayText}${displaySelected}${displayModels}${displayBertFeature}${displayBertModel}`;
+        output.textContent = `${displayText}${displaySelected}`;
       });
     };
     document.querySelector('[data-action="train"]').onclick = async () => { const result = await callApi('/train', 'train-output', { action: 'train', body: JSON.stringify({ training_model: document.getElementById('model').value, aggregation_hours: Number(document.getElementById('hours').value) }) }); if (result) renderTrainingEvolution(result); };
