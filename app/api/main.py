@@ -36,6 +36,7 @@ app.add_middleware(
 
 app.state.latest_prediction = None
 app.state.latest_training = None
+app.state.cargo_profiles = {}
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -95,7 +96,14 @@ class ParameterLimit(BaseModel):
         return self
 
 
-class CargoAssessmentRequest(CargoTemperaturePolicy):
+class CargoAssessmentRequest(BaseModel):
+    profile_id: Optional[str] = Field(default=None, description="Profil de transport salvat anterior.")
+    product_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    min_temperature: Optional[float] = Field(default=None, ge=-80, le=80)
+    max_temperature: Optional[float] = Field(default=None, ge=-80, le=80)
+    min_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    max_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    target_temperature: Optional[float] = Field(default=None, ge=-80, le=80)
     device_identifier: Optional[str] = Field(default=None, description="Dispozitivul din care se citesc valorile.")
     temperature: Optional[float] = Field(default=None, ge=-80, le=80)
     humidity: Optional[float] = Field(default=None, ge=0, le=100)
@@ -107,6 +115,20 @@ class CargoAssessmentRequest(CargoTemperaturePolicy):
         default_factory=dict,
         description="Valori senzoriale trimise direct de client pentru parametrii configurati.",
     )
+
+    @model_validator(mode="after")
+    def validate_inline_policy(self):
+        if self.profile_id:
+            return self
+        if not self.product_name or self.min_temperature is None or self.max_temperature is None:
+            raise ValueError(
+                "Trimite profile_id sau configureaza product_name, min_temperature si max_temperature."
+            )
+        if self.min_temperature > self.max_temperature:
+            raise ValueError("min_temperature trebuie sa fie <= max_temperature.")
+        if self.min_humidity is not None and self.max_humidity is not None and self.min_humidity > self.max_humidity:
+            raise ValueError("min_humidity trebuie sa fie <= max_humidity.")
+        return self
 
 
 class CargoAssessmentResponse(BaseModel):
@@ -122,6 +144,27 @@ class CargoAssessmentResponse(BaseModel):
     alerts: list[str] = Field(default_factory=list)
     parameter_status: dict[str, str] = Field(default_factory=dict)
     parameter_values: dict[str, float] = Field(default_factory=dict)
+    profile_id: Optional[str] = None
+
+
+class CargoProfile(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=100)
+    customer_id: Optional[str] = Field(default=None, max_length=100)
+    product_name: str = Field(min_length=1, max_length=120)
+    min_temperature: float = Field(ge=-80, le=80)
+    max_temperature: float = Field(ge=-80, le=80)
+    min_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    max_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    target_temperature: Optional[float] = Field(default=None, ge=-80, le=80)
+    parameter_limits: dict[str, ParameterLimit] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_profile(self):
+        if self.min_temperature > self.max_temperature:
+            raise ValueError("min_temperature trebuie sa fie <= max_temperature.")
+        if self.min_humidity is not None and self.max_humidity is not None and self.min_humidity > self.max_humidity:
+            raise ValueError("min_humidity trebuie sa fie <= max_humidity.")
+        return self
 
 
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
@@ -264,6 +307,36 @@ def data_health_check():
     return {"status": "ok", "service": "supabase-measurements", "rows_available": True}
 
 
+@app.post("/transport/profiles", response_model=CargoProfile)
+def create_cargo_profile(profile: CargoProfile):
+    """Create or replace a reusable cargo transport profile."""
+    supported_parameters = {"temperature", "humidity", "pm25", "pm10", "co2", "voc"}
+    unknown_parameters = set(profile.parameter_limits) - supported_parameters
+    if unknown_parameters:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Parametri necunoscuti: {', '.join(sorted(unknown_parameters))}.",
+        )
+    app.state.cargo_profiles[profile.profile_id] = profile.model_dump()
+    return profile
+
+
+@app.get("/transport/profiles", response_model=list[CargoProfile])
+def list_cargo_profiles(customer_id: str | None = Query(default=None)):
+    profiles = list(app.state.cargo_profiles.values())
+    if customer_id is not None:
+        profiles = [profile for profile in profiles if profile.get("customer_id") == customer_id]
+    return profiles
+
+
+@app.get("/transport/profiles/{profile_id}", response_model=CargoProfile)
+def get_cargo_profile(profile_id: str):
+    profile = app.state.cargo_profiles.get(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profilul de transport nu există.")
+    return profile
+
+
 @app.post("/transport/cargo-assessment", response_model=CargoAssessmentResponse)
 def assess_cargo_transport(request: CargoAssessmentRequest):
     """Evaluate cargo conditions using operator-supplied product limits.
@@ -271,28 +344,45 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
     The API intentionally does not contain hardcoded fruit requirements. The
     carrier or their technical specialist supplies the approved transport range.
     """
+    profile = None
+    if request.profile_id:
+        profile = app.state.cargo_profiles.get(request.profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Profilul de transport nu există.")
+
+    product_name = profile["product_name"] if profile else request.product_name
+    min_temperature = profile["min_temperature"] if profile else request.min_temperature
+    max_temperature = profile["max_temperature"] if profile else request.max_temperature
+    min_humidity = profile.get("min_humidity") if profile else request.min_humidity
+    max_humidity = profile.get("max_humidity") if profile else request.max_humidity
+    target_temperature = profile.get("target_temperature") if profile else request.target_temperature
+    profile_limits = profile.get("parameter_limits", {}) if profile else request.parameter_limits
+
     measured_temperature = request.temperature
     measured_humidity = request.humidity
     resolved_device_identifier = (request.device_identifier or "").strip() or None
 
     supported_parameters = {"temperature", "humidity", "pm25", "pm10", "co2", "voc"}
-    unknown_parameters = set(request.parameter_limits) - supported_parameters
+    unknown_parameters = set(profile_limits) - supported_parameters
     if unknown_parameters:
         raise HTTPException(
             status_code=422,
             detail=f"Parametri necunoscuti: {', '.join(sorted(unknown_parameters))}.",
         )
 
-    configured_limits = dict(request.parameter_limits)
+    configured_limits = {
+        name: ParameterLimit(**values) if isinstance(values, dict) else values
+        for name, values in profile_limits.items()
+    }
     if "temperature" not in configured_limits:
         configured_limits["temperature"] = ParameterLimit(
-            min_value=request.min_temperature,
-            max_value=request.max_temperature,
+            min_value=min_temperature,
+            max_value=max_temperature,
         )
-    if request.min_humidity is not None or request.max_humidity is not None:
+    if min_humidity is not None or max_humidity is not None:
         configured_limits.setdefault(
             "humidity",
-            ParameterLimit(min_value=request.min_humidity, max_value=request.max_humidity),
+            ParameterLimit(min_value=min_humidity, max_value=max_humidity),
         )
 
     parameter_values = dict(request.parameter_values)
@@ -341,18 +431,18 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
     temperature_limits = configured_limits["temperature"]
     effective_min_temperature = temperature_limits.min_value
     effective_max_temperature = temperature_limits.max_value
-    recommended_temperature = request.target_temperature
+    recommended_temperature = target_temperature
     if recommended_temperature is None:
         recommended_temperature = (
-            (effective_min_temperature or request.min_temperature)
-            + (effective_max_temperature or request.max_temperature)
+            (effective_min_temperature or min_temperature)
+            + (effective_max_temperature or max_temperature)
         ) / 2
 
     policy_payload = {
-        "min_temperature": request.min_temperature,
-        "max_temperature": request.max_temperature,
-        "min_humidity": request.min_humidity,
-        "max_humidity": request.max_humidity,
+        "min_temperature": min_temperature,
+        "max_temperature": max_temperature,
+        "min_humidity": min_humidity,
+        "max_humidity": max_humidity,
         "target_temperature": recommended_temperature,
         "parameter_limits": {
             parameter_name: limit.model_dump()
@@ -364,7 +454,7 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         return CargoAssessmentResponse(
             status="missing_measurement",
             message="Nu există o temperatură măsurată pentru evaluarea transportului.",
-            product_name=request.product_name,
+            product_name=product_name,
             device_identifier=resolved_device_identifier,
             policy=policy_payload,
             recommended_temperature=recommended_temperature,
@@ -389,9 +479,9 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
 
     if measured_humidity is not None:
         humidity_out = (
-            request.min_humidity is not None and measured_humidity < request.min_humidity
+            min_humidity is not None and measured_humidity < min_humidity
         ) or (
-            request.max_humidity is not None and measured_humidity > request.max_humidity
+            max_humidity is not None and measured_humidity > max_humidity
         )
         if humidity_out:
             alerts.append("Umiditatea este în afara limitelor configurate.")
@@ -416,8 +506,8 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
 
     return CargoAssessmentResponse(
         status=status,
-        message=f"Evaluare transport pentru {request.product_name}: {status}.",
-        product_name=request.product_name,
+        message=f"Evaluare transport pentru {product_name}: {status}.",
+        product_name=product_name,
         device_identifier=resolved_device_identifier,
         measured_temperature=measured_temperature,
         measured_humidity=measured_humidity,
@@ -427,6 +517,7 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         alerts=alerts,
         parameter_status=parameter_status,
         parameter_values=parameter_values,
+        profile_id=request.profile_id,
     )
 
 

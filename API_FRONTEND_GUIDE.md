@@ -18,6 +18,9 @@ The live interactive API specification is available at `/docs`. Android clients 
 | API status | `GET /health` | No body. |
 | Sensor-data status | `GET /health/data` | No body. Verifies that the Railway service can read Supabase measurements. |
 | Cargo transport assessment | `POST /transport/cargo-assessment` | JSON with product name, approved temperature limits, optional humidity limits, and optional sensor values/device. |
+| Create cargo profile | `POST /transport/profiles` | Save product limits once and receive a `profile_id`. |
+| List cargo profiles | `GET /transport/profiles` | List profiles for the current API service; optional `customer_id` filter. |
+| Get cargo profile | `GET /transport/profiles/{profile_id}` | Read one saved cargo profile. |
 
 ## Cargo Transport
 
@@ -63,6 +66,41 @@ For additional parameters, send per-parameter limits and values:
 ```
 
 Supported parameter names are `temperature`, `humidity`, `pm25`, `pm10`, `co2`, and `voc`. The response exposes `parameter_status` and `parameter_values`, so a client can decide whether to adjust cooling, ventilation, or another actuator.
+
+### Reusable Profile
+
+Create the product profile once:
+
+```json
+{
+	"profile_id": "firma-1-mere-standard",
+	"customer_id": "firma-1",
+	"product_name": "mere",
+	"min_temperature": 2,
+	"max_temperature": 8,
+	"min_humidity": 80,
+	"max_humidity": 95,
+	"parameter_limits": {
+		"co2": {"max_value": 1000}
+	}
+}
+```
+
+Then assess each truck using only the saved profile and current readings:
+
+```json
+{
+	"profile_id": "firma-1-mere-standard",
+	"device_identifier": "truck-01-sensor",
+	"parameter_values": {
+		"temperature": 9,
+		"humidity": 88,
+		"co2": 1200
+	}
+}
+```
+
+Profiles are held in the API process memory. For durable multi-instance production storage, persist the same profile model in a customer-scoped Supabase table and enforce authentication/authorization by `customer_id`.
 
 ## Android Screens
 
