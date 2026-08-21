@@ -34,6 +34,31 @@ LOCATION_TEXT_CANDIDATES = [
     "address",
     "device_location",
 ]
+LOCATION_TABLE_CANDIDATES = [
+    "location",
+    "locations",
+    "device_locations",
+    "device_location",
+    "devices",
+    "device",
+]
+LOCATION_DEVICE_ID_CANDIDATES = [
+    "device_identifier",
+    "device_id",
+    "deviceId",
+    "sensor_id",
+    "sensorId",
+    "name",
+    "device_name",
+    "id",
+]
+MEASUREMENT_DEVICE_REF_CANDIDATES = [
+    "device_id",
+    "deviceId",
+    "sensor_id",
+    "sensorId",
+    "device_ref_id",
+]
 
 
 def _create_supabase_client() -> Optional[Client]:
@@ -151,49 +176,87 @@ def _fetch_measurements_via_rest(limit: Optional[int] = None, descending: bool =
         "Content-Type": "application/json",
     }
 
-    if limit is None:
-        response = requests.get(endpoint, params={"select": "*"}, headers=headers, timeout=20)
-        response.raise_for_status()
-        return response.json()
+    select_candidates = ["*,device(*)", "*"]
 
-    for order_column in ["created_at", "timestamp", "time", "recorded_at"]:
-        params = {
-            "select": "*",
-            "limit": limit,
-            "order": f"{order_column}.{'desc' if descending else 'asc'}",
-        }
+    if limit is None:
+        for select_value in select_candidates:
+            try:
+                response = requests.get(
+                    endpoint,
+                    params={"select": select_value},
+                    headers=headers,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException:
+                continue
+        return []
+
+    for select_value in select_candidates:
+        for order_column in ["created_at", "timestamp", "time", "recorded_at"]:
+            params = {
+                "select": select_value,
+                "limit": limit,
+                "order": f"{order_column}.{'desc' if descending else 'asc'}",
+            }
+            try:
+                response = requests.get(endpoint, params=params, headers=headers, timeout=20)
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException:
+                continue
+
+    for select_value in select_candidates:
         try:
-            response = requests.get(endpoint, params=params, headers=headers, timeout=20)
+            response = requests.get(
+                endpoint,
+                params={"select": select_value, "limit": limit},
+                headers=headers,
+                timeout=20,
+            )
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except requests.RequestException:
             continue
 
-    response = requests.get(endpoint, params={"select": "*", "limit": limit}, headers=headers, timeout=20)
-    response.raise_for_status()
-    return response.json()
+    return []
 
 
 def _fetch_measurements_records(client: Client, limit: Optional[int], descending: bool) -> list[dict[str, Any]]:
-    if limit is None:
-        response = client.table("measurements").select("*").execute()
-        return response.data or []
+    select_candidates = ["*,device(*)", "*"]
 
-    for order_column in ["created_at", "timestamp", "time", "recorded_at"]:
+    if limit is None:
+        for select_value in select_candidates:
+            try:
+                response = client.table("measurements").select(select_value).execute()
+                return response.data or []
+            except Exception:
+                continue
+        return []
+
+    for select_value in select_candidates:
+        for order_column in ["created_at", "timestamp", "time", "recorded_at"]:
+            try:
+                response = (
+                    client.table("measurements")
+                    .select(select_value)
+                    .order(order_column, desc=descending)
+                    .limit(limit)
+                    .execute()
+                )
+                return response.data or []
+            except Exception:
+                continue
+
+    for select_value in select_candidates:
         try:
-            response = (
-                client.table("measurements")
-                .select("*")
-                .order(order_column, desc=descending)
-                .limit(limit)
-                .execute()
-            )
+            response = client.table("measurements").select(select_value).limit(limit).execute()
             return response.data or []
         except Exception:
             continue
 
-    response = client.table("measurements").select("*").limit(limit).execute()
-    return response.data or []
+    return []
 
 
 def get_measurements(
@@ -284,6 +347,155 @@ def _to_float_or_none(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _extract_location_payload(record: dict[str, Any], source_table: str, source_id_column: str) -> Optional[dict[str, Any]]:
+    if not record:
+        return None
+
+    location_text = None
+    for key in LOCATION_TEXT_CANDIDATES:
+        value = record.get(key)
+        if value is not None and str(value).strip() != "":
+            location_text = str(value).strip()
+            break
+
+    latitude = None
+    for key in LATITUDE_CANDIDATES:
+        value = record.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        try:
+            latitude = float(value)
+            break
+        except (TypeError, ValueError):
+            continue
+
+    longitude = None
+    for key in LONGITUDE_CANDIDATES:
+        value = record.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        try:
+            longitude = float(value)
+            break
+        except (TypeError, ValueError):
+            continue
+
+    if location_text is None and latitude is None and longitude is None:
+        return None
+
+    return {
+        "location": location_text,
+        "latitude": latitude,
+        "longitude": longitude,
+        "source_table": source_table,
+        "source_id_column": source_id_column,
+    }
+
+
+def _lookup_location_via_client(client: Client, identifiers: list[str]) -> Optional[dict[str, Any]]:
+    for table_name in LOCATION_TABLE_CANDIDATES:
+        for id_column in LOCATION_DEVICE_ID_CANDIDATES:
+            for identifier_value in identifiers:
+                try:
+                    response = (
+                        client.table(table_name)
+                        .select("*")
+                        .eq(id_column, identifier_value)
+                        .limit(1)
+                        .execute()
+                    )
+                except Exception:
+                    continue
+
+                rows = response.data or []
+                if not rows:
+                    continue
+
+                payload = _extract_location_payload(rows[0], source_table=table_name, source_id_column=id_column)
+                if payload:
+                    return payload
+
+    return None
+
+
+def _lookup_location_via_rest(identifiers: list[str]) -> Optional[dict[str, Any]]:
+    load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url or not supabase_service_role_key:
+        return None
+
+    headers = {
+        "apikey": supabase_service_role_key,
+        "Authorization": f"Bearer {supabase_service_role_key}",
+        "Content-Type": "application/json",
+    }
+
+    for table_name in LOCATION_TABLE_CANDIDATES:
+        endpoint = f"{supabase_url.rstrip('/')}/rest/v1/{table_name}"
+        for id_column in LOCATION_DEVICE_ID_CANDIDATES:
+            for identifier_value in identifiers:
+                try:
+                    response = requests.get(
+                        endpoint,
+                        params={"select": "*", id_column: f"eq.{identifier_value}", "limit": 1},
+                        headers=headers,
+                        timeout=20,
+                    )
+                    response.raise_for_status()
+                    rows = response.json() or []
+                except (requests.RequestException, ValueError):
+                    continue
+
+                if not rows:
+                    continue
+
+                payload = _extract_location_payload(rows[0], source_table=table_name, source_id_column=id_column)
+                if payload:
+                    return payload
+
+    return None
+
+
+def get_device_location_details(device_identifier: str | None) -> Optional[dict[str, Any]]:
+    requested_identifier = (device_identifier or "").strip()
+    if not requested_identifier:
+        return None
+
+    identifier_candidates = [requested_identifier]
+
+    # Fast path: if measurements already include location, use the newest row.
+    dataframe = get_measurements(device_identifier=requested_identifier, limit=1, descending=True)
+    if not dataframe.empty:
+        row = dataframe.iloc[0].to_dict()
+
+        for ref_column in MEASUREMENT_DEVICE_REF_CANDIDATES:
+            ref_value = row.get(ref_column)
+            if ref_value is None:
+                continue
+            ref_text = str(ref_value).strip()
+            if ref_text and ref_text not in identifier_candidates:
+                identifier_candidates.append(ref_text)
+
+        payload = _extract_location_payload(
+            row,
+            source_table="measurements",
+            source_id_column="device_identifier",
+        )
+        if payload:
+            return payload
+
+    client = _create_supabase_client()
+    if client is not None:
+        payload = _lookup_location_via_client(client, identifier_candidates)
+        if payload:
+            return payload
+
+    return _lookup_location_via_rest(identifier_candidates)
 
 
 def get_devices_with_location() -> list[dict[str, Any]]:

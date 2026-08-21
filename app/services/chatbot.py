@@ -19,7 +19,7 @@ from app.core.config import (
     OLLAMA_TIMEOUT_SECONDS,
     OLLAMA_TOP_P,
 )
-from app.core.database import get_measurements
+from app.core.database import get_device_location_details, get_devices_with_location, get_measurements
 from app.services.bert_sensor_detector import detect_sensor_features
 from app.services.predictor import predict_air_quality
 
@@ -233,6 +233,7 @@ class ChatbotContext:
     latest_measurement: dict[str, Any] | None = None
     model_outputs: dict[str, Any] | None = None
     selected_device_identifier: str | None = None
+    available_devices: list[dict[str, Any]] | None = None
 
 
 class RuleBasedAirQualityChatbot:
@@ -244,6 +245,8 @@ class RuleBasedAirQualityChatbot:
         device_identifier: str | None = None,
     ) -> ChatbotContext:
         latest_measurement = None
+        location_details = None
+        available_devices: list[dict[str, Any]] = []
 
         # The API layer remains resilient even if database access fails.
         with suppress(RuntimeError, ValueError, KeyError, TypeError):
@@ -256,16 +259,64 @@ class RuleBasedAirQualityChatbot:
             if not df.empty:
                 latest_measurement = self._extract_latest_measurement(df)
 
+        with suppress(RuntimeError, ValueError, KeyError, TypeError):
+            if device_identifier:
+                location_details = get_device_location_details(device_identifier)
+
+        with suppress(RuntimeError, ValueError, KeyError, TypeError):
+            available_devices = get_devices_with_location()
+
+        if location_details:
+            if latest_measurement is None:
+                latest_measurement = {"device_identifier": device_identifier}
+            latest_measurement["location"] = location_details.get("location")
+            latest_measurement["latitude"] = location_details.get("latitude")
+            latest_measurement["longitude"] = location_details.get("longitude")
+            latest_measurement["location_source_table"] = location_details.get("source_table")
+            latest_measurement["location_source_column"] = location_details.get("source_id_column")
+
         return ChatbotContext(
             latest_measurement=latest_measurement,
             model_outputs=model_outputs or {},
             selected_device_identifier=device_identifier,
+            available_devices=available_devices,
         )
+
+    @staticmethod
+    def is_devices_question(normalized_message: str) -> bool:
+        device_markers = [
+            "toate dispozitivele",
+            "ce dispozitive",
+            "lista dispozitive",
+            "dispozitivele",
+            "device-uri",
+            "deviceuri",
+            "senzori disponibili",
+        ]
+        return any(token in normalized_message for token in device_markers)
+
+    @staticmethod
+    def is_capabilities_question(normalized_message: str) -> bool:
+        capability_markers = [
+            "toate functiile",
+            "toate funcțiile",
+            "ce functii",
+            "ce funcții",
+            "ce poti face",
+            "ce poți face",
+            "ce stii sa faci",
+            "ce știi să faci",
+        ]
+        return any(token in normalized_message for token in capability_markers)
 
     @staticmethod
     def is_location_question(normalized_message: str) -> bool:
         location_markers = [
             "unde",
+            "unde e",
+            "unde este",
+            "se afla",
+            "se află",
             "locatie",
             "locație",
             "amplasat",
@@ -280,10 +331,18 @@ class RuleBasedAirQualityChatbot:
             "adresa",
             "adresă",
         ]
-        device_markers = ["dispozitiv", "device", "senzor", "camera", "cameră"]
-        return any(token in normalized_message for token in location_markers) and any(
-            token in normalized_message for token in device_markers
-        )
+        device_markers = [
+            "dispozitiv",
+            "dispoz",
+            "dispzo",
+            "device",
+            "senzor",
+            "camera",
+            "cameră",
+        ]
+        has_location_marker = any(token in normalized_message for token in location_markers)
+        has_device_marker = any(token in normalized_message for token in device_markers)
+        return has_location_marker and has_device_marker
 
     @staticmethod
     def is_live_data_question(normalized_message: str) -> bool:
@@ -347,6 +406,12 @@ class RuleBasedAirQualityChatbot:
 
         if self.is_location_question(normalized):
             return self._format_device_location_reply(context)
+
+        if self.is_devices_question(normalized):
+            return self._format_devices_catalog_reply(context)
+
+        if self.is_capabilities_question(normalized):
+            return self._format_capabilities_reply(context)
 
         if self.is_live_data_question(normalized):
             return self._format_live_status_reply(context, normalized)
@@ -635,6 +700,34 @@ class RuleBasedAirQualityChatbot:
         return (
             f"Pentru dispozitivul '{device_identifier}' nu am încă informații de locație "
             "(nici text, nici coordonate GPS)."
+        )
+
+    @staticmethod
+    def _format_devices_catalog_reply(context: ChatbotContext) -> str:
+        devices = context.available_devices or []
+        if not devices:
+            return "Nu am găsit dispozitive pe contul curent sau nu am acces la ele în acest moment."
+
+        lines = []
+        for item in devices[:20]:
+            identifier = str(item.get("device_identifier") or "dispozitiv-necunoscut")
+            location_label = str(item.get("location_label") or "Locație necunoscută")
+            lines.append(f"- {identifier}: {location_label}")
+
+        suffix = ""
+        if len(devices) > 20:
+            suffix = f"\n... și încă {len(devices) - 20} dispozitive."
+
+        return f"Am găsit {len(devices)} dispozitive pe cont:\n" + "\n".join(lines) + suffix
+
+    @staticmethod
+    def _format_capabilities_reply(context: ChatbotContext) -> str:
+        devices_count = len(context.available_devices or [])
+        return (
+            "Pot acoperi funcțiile principale din aplicație: predicție curentă, prognoză, "
+            "detecție anomalii, explicații indicatori (PM/CO2/temperatură/umiditate), "
+            "detalii despre antrenare și locația dispozitivelor. "
+            f"În prezent văd {devices_count} dispozitive în contul tău."
         )
 
     @staticmethod
@@ -1054,6 +1147,7 @@ def _serialize_chat_context(context: ChatbotContext) -> dict[str, Any]:
     return {
         "latest_measurement": context.latest_measurement,
         "selected_device_identifier": context.selected_device_identifier,
+        "available_devices": context.available_devices,
         "latest_prediction": (context.model_outputs or {}).get("latest_prediction"),
         "latest_training": (context.model_outputs or {}).get("latest_training"),
         "reference_ranges": AIR_QUALITY_REFERENCE,

@@ -149,3 +149,69 @@ def test_chatbot_reports_missing_location_for_selected_device(monkeypatch):
 
     assert "dev-x" in reply
     assert "nu pot determina locația" in reply.lower()
+
+
+def test_chatbot_uses_location_table_when_measurement_has_no_location(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"device_identifier": "dev-77", "temperature": 22.0}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.get_device_location_details",
+        lambda device_identifier: {
+            "location": "Depozit Nord",
+            "latitude": 46.7712,
+            "longitude": 23.6236,
+            "source_table": "location",
+            "source_id_column": "device_identifier",
+        },
+    )
+
+    reply = get_chatbot_reply("Unde se afla dispozitivul?", device_identifier="dev-77")
+
+    assert "Depozit Nord" in reply
+    assert "46.77120" in reply
+    assert "23.62360" in reply
+
+
+def test_chatbot_lists_all_devices_from_account(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"device_identifier": "dev-1"}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.get_devices_with_location",
+        lambda: [
+            {"device_identifier": "dev-1", "location_label": "Lab A"},
+            {"device_identifier": "dev-2", "location_label": "Birou"},
+        ],
+    )
+
+    reply = get_chatbot_reply("Ce dispozitive sunt pe cont?")
+
+    assert "2 dispozitive" in reply
+    assert "dev-1" in reply
+    assert "Lab A" in reply
+    assert "dev-2" in reply
+
+
+def test_chatbot_reports_capabilities_and_device_count(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.services.chatbot.get_measurements",
+        lambda **kwargs: pd.DataFrame([{"device_identifier": "dev-1"}]),
+    )
+    monkeypatch.setattr(
+        "app.services.chatbot.get_devices_with_location",
+        lambda: [{"device_identifier": "dev-1", "location_label": "Lab A"}],
+    )
+
+    reply = get_chatbot_reply("Ce poți face, toate funcțiile?")
+
+    assert "funcțiile principale" in reply or "funcțiile" in reply
+    assert "1 dispozitive" in reply
