@@ -832,6 +832,8 @@ elif selected_page == "Chat":
     # Initialize session state for chat history
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = "streamlit-main"
 
     # Display chat history
     chat_container = st.container()
@@ -875,6 +877,7 @@ elif selected_page == "Chat":
                     "message": user_input,
                     "history": st.session_state.chat_history[:-1][-12:],
                     "device_identifier": chat_device,
+                    "session_id": st.session_state.chat_session_id,
                 },
                 timeout=30,
             )

@@ -141,12 +141,20 @@ class ChatRequest(BaseModel):
         default=None,
         description="Alias pentru 'device_identifier' folosit de unele integrari externe.",
     )
+    session_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Identificator sesiune client pentru gestionarea contextului la schimbarea dispozitivului.",
+    )
 
 
 class ChatResponse(BaseModel):
     reply: str
     text: str
     selected: Optional[str] = None
+    device_changed: bool = False
+    device_change_message: Optional[str] = None
 
 
 class ChatWelcomeResponse(BaseModel):
@@ -536,13 +544,33 @@ def detect_anomaly(
 def chat(request: ChatRequest):
     message = (request.message or request.text or "").strip()
     resolved_device_identifier = (request.device_identifier or request.selected or "").strip() or None
+    session_id = (request.session_id or "default").strip()
+
+    if not hasattr(app.state, "chat_device_by_session"):
+        app.state.chat_device_by_session = {}
+
+    previous_device_identifier = app.state.chat_device_by_session.get(session_id)
+    device_changed = previous_device_identifier is not None and previous_device_identifier != resolved_device_identifier
+    app.state.chat_device_by_session[session_id] = resolved_device_identifier
+
+    device_change_message = None
+    if device_changed:
+        previous_label = previous_device_identifier or "toate dispozitivele"
+        current_label = resolved_device_identifier or "toate dispozitivele"
+        device_change_message = (
+            f"Context resetat: dispozitiv schimbat din '{previous_label}' în '{current_label}'."
+        )
 
     if not message:
         welcome_message = get_chatbot_welcome_message()
+        if device_change_message:
+            welcome_message = f"{welcome_message}\n\n{device_change_message}"
         return ChatResponse(
             reply=welcome_message,
             text=welcome_message,
             selected=resolved_device_identifier,
+            device_changed=device_changed,
+            device_change_message=device_change_message,
         )
 
     model_outputs = {
@@ -552,10 +580,18 @@ def chat(request: ChatRequest):
     reply = get_chatbot_reply(
         message,
         model_outputs=model_outputs,
-        conversation_history=[chat_message.model_dump() for chat_message in request.history],
+        conversation_history=[] if device_changed else [chat_message.model_dump() for chat_message in request.history],
         device_identifier=resolved_device_identifier,
     )
-    return ChatResponse(reply=reply, text=reply, selected=resolved_device_identifier)
+    if device_change_message:
+        reply = f"{device_change_message}\n\n{reply}"
+    return ChatResponse(
+        reply=reply,
+        text=reply,
+        selected=resolved_device_identifier,
+        device_changed=device_changed,
+        device_change_message=device_change_message,
+    )
 
 
 @app.get("/chat/welcome", response_model=ChatWelcomeResponse)
