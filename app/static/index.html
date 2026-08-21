@@ -61,6 +61,16 @@
         <button data-action="anomaly">Verifică anomalia</button>
         <pre id="anomaly-output">Așteaptă o comandă.</pre>
       </section>
+      <section>
+        <h2>Chat Asistent</h2>
+        <p class="hint">Întreabă asistentul despre valorile senzorilor și recomandări.</p>
+        <label for="chat-device">Dispozitiv (opțional)</label>
+        <input id="chat-device" type="text" placeholder="ex: camera-1">
+        <label for="chat-message">Mesaj</label>
+        <input id="chat-message" type="text" value="Cum este calitatea aerului acum?">
+        <button data-action="chat">Trimite mesaj</button>
+        <pre id="chat-output">Așteaptă o comandă.</pre>
+      </section>
       <section class="wide">
         <h2>Antrenează modelul</h2>
         <p class="hint">Antrenarea poate dura. Rezultatul include un raport despre date și model.</p>
@@ -159,6 +169,22 @@
     document.querySelector('[data-action="predict"]').onclick = () => callApi('/predict', 'predict-output', { action: 'predict' });
     document.querySelector('[data-action="forecast"]').onclick = () => callApi(`/predict?include_forecast=true&forecast_horizons=${encodeURIComponent(document.getElementById('forecast-horizons').value)}`, 'forecast-output', { action: 'forecast' });
     document.querySelector('[data-action="anomaly"]').onclick = () => callApi('/anomaly', 'anomaly-output', { action: 'anomaly' });
+    document.querySelector('[data-action="chat"]').onclick = () => {
+      const message = document.getElementById('chat-message').value.trim();
+      const selected = document.getElementById('chat-device').value.trim();
+      const payload = { message };
+      if (selected) payload.selected = selected;
+      return callApi('/chat', 'chat-output', {
+        action: 'chat',
+        body: JSON.stringify(payload),
+      }).then(result => {
+        if (!result) return;
+        const output = document.getElementById('chat-output');
+        const displayText = result.text || result.reply || 'Fără răspuns.';
+        const displaySelected = result.selected ? `\n\nDispozitiv selectat: ${result.selected}` : '';
+        output.textContent = `${displayText}${displaySelected}`;
+      });
+    };
     document.querySelector('[data-action="train"]').onclick = async () => { const result = await callApi('/train', 'train-output', { action: 'train', body: JSON.stringify({ training_model: document.getElementById('model').value, aggregation_hours: Number(document.getElementById('hours').value) }) }); if (result) renderTrainingEvolution(result); };
     document.querySelector('[data-action="custom"]').onclick = () => callApi('/predict-custom', 'custom-output', { action: 'custom', body: JSON.stringify(Object.fromEntries(['temperature', 'humidity', 'pm25', 'pm10', 'co2'].map(id => [id, Number(document.getElementById(id).value)]))) });
   </script>
