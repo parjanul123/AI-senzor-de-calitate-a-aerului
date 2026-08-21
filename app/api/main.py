@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, Literal, Optional
 import pandas as pd
 import numpy as np
@@ -58,6 +58,49 @@ class PredictionResponse(BaseModel):
     device_identifier: Optional[str] = None
 
 
+class CargoTemperaturePolicy(BaseModel):
+    product_name: str = Field(min_length=1, max_length=120, description="Produsul transportat.")
+    min_temperature: float = Field(ge=-80, le=80, description="Limita minima furnizata de operator.")
+    max_temperature: float = Field(ge=-80, le=80, description="Limita maxima furnizata de operator.")
+    min_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    max_humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    target_temperature: Optional[float] = Field(
+        default=None,
+        ge=-80,
+        le=80,
+        description="Setpoint recomandat de operator; implicit este mijlocul intervalului.",
+    )
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if self.min_temperature > self.max_temperature:
+            raise ValueError("min_temperature trebuie sa fie <= max_temperature.")
+        if self.min_humidity is not None and self.max_humidity is not None and self.min_humidity > self.max_humidity:
+            raise ValueError("min_humidity trebuie sa fie <= max_humidity.")
+        if self.target_temperature is not None and not self.min_temperature <= self.target_temperature <= self.max_temperature:
+            raise ValueError("target_temperature trebuie sa fie in intervalul de temperatura.")
+        return self
+
+
+class CargoAssessmentRequest(CargoTemperaturePolicy):
+    device_identifier: Optional[str] = Field(default=None, description="Dispozitivul din care se citesc valorile.")
+    temperature: Optional[float] = Field(default=None, ge=-80, le=80)
+    humidity: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class CargoAssessmentResponse(BaseModel):
+    status: Literal["within_limits", "too_cold", "too_hot", "humidity_out_of_range", "missing_measurement"]
+    message: str
+    product_name: str
+    device_identifier: Optional[str] = None
+    measured_temperature: Optional[float] = None
+    measured_humidity: Optional[float] = None
+    policy: dict[str, Any]
+    recommended_temperature: float
+    recommended_action: str
+    alerts: list[str] = Field(default_factory=list)
+
+
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
     parsed: list[int] = []
     for token in raw_horizons.split(","):
@@ -85,6 +128,16 @@ def _resolve_forecast_lookback_hours(horizons: list[int], explicit_lookback: int
     max_horizon = max(horizons)
     # Automatically choose enough history for trend stability while respecting limits.
     return max(24, min(720, max_horizon * 4))
+
+
+def _extract_numeric_value(row: pd.Series, candidates: tuple[str, ...]) -> float | None:
+    for candidate in candidates:
+        if candidate not in row.index:
+            continue
+        value = pd.to_numeric(row.get(candidate), errors="coerce")
+        if pd.notna(value):
+            return float(value)
+    return None
 
 
 class TrainRequest(BaseModel):
@@ -186,6 +239,96 @@ def data_health_check():
         )
 
     return {"status": "ok", "service": "supabase-measurements", "rows_available": True}
+
+
+@app.post("/transport/cargo-assessment", response_model=CargoAssessmentResponse)
+def assess_cargo_transport(request: CargoAssessmentRequest):
+    """Evaluate cargo conditions using operator-supplied product limits.
+
+    The API intentionally does not contain hardcoded fruit requirements. The
+    carrier or their technical specialist supplies the approved transport range.
+    """
+    measured_temperature = request.temperature
+    measured_humidity = request.humidity
+    resolved_device_identifier = (request.device_identifier or "").strip() or None
+
+    if measured_temperature is None or measured_humidity is None:
+        try:
+            measurements = get_measurements(
+                device_identifier=resolved_device_identifier,
+                limit=1,
+                descending=True,
+                raise_on_error=True,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if not measurements.empty:
+            latest = measurements.iloc[0]
+            if measured_temperature is None:
+                measured_temperature = _extract_numeric_value(latest, ("temperature", "temperatura", "temp"))
+            if measured_humidity is None:
+                measured_humidity = _extract_numeric_value(latest, ("humidity", "umiditate"))
+
+    recommended_temperature = request.target_temperature
+    if recommended_temperature is None:
+        recommended_temperature = (request.min_temperature + request.max_temperature) / 2
+
+    policy_payload = {
+        "min_temperature": request.min_temperature,
+        "max_temperature": request.max_temperature,
+        "min_humidity": request.min_humidity,
+        "max_humidity": request.max_humidity,
+        "target_temperature": recommended_temperature,
+    }
+
+    if measured_temperature is None:
+        return CargoAssessmentResponse(
+            status="missing_measurement",
+            message="Nu există o temperatură măsurată pentru evaluarea transportului.",
+            product_name=request.product_name,
+            device_identifier=resolved_device_identifier,
+            policy=policy_payload,
+            recommended_temperature=recommended_temperature,
+            recommended_action="Trimite temperatura senzorului sau configurează un device_identifier valid.",
+        )
+
+    alerts: list[str] = []
+    if measured_temperature < request.min_temperature:
+        status = "too_cold"
+        alerts.append("Temperatura este sub limita configurată pentru produs.")
+        action = "Crește temperatura treptat spre setpointul recomandat și verifică riscul de îngheț."
+    elif measured_temperature > request.max_temperature:
+        status = "too_hot"
+        alerts.append("Temperatura este peste limita configurată pentru produs.")
+        action = "Activează răcirea și readu temperatura treptat spre setpointul recomandat."
+    else:
+        status = "within_limits"
+        action = "Menține temperatura în intervalul configurat și continuă monitorizarea."
+
+    if measured_humidity is not None:
+        humidity_out = (
+            request.min_humidity is not None and measured_humidity < request.min_humidity
+        ) or (
+            request.max_humidity is not None and measured_humidity > request.max_humidity
+        )
+        if humidity_out:
+            alerts.append("Umiditatea este în afara limitelor configurate.")
+            if status == "within_limits":
+                status = "humidity_out_of_range"
+
+    return CargoAssessmentResponse(
+        status=status,
+        message=f"Evaluare transport pentru {request.product_name}: {status}.",
+        product_name=request.product_name,
+        device_identifier=resolved_device_identifier,
+        measured_temperature=measured_temperature,
+        measured_humidity=measured_humidity,
+        policy=policy_payload,
+        recommended_temperature=recommended_temperature,
+        recommended_action=action,
+        alerts=alerts,
+    )
 
 
 @app.get("/")

@@ -17,6 +17,28 @@ The live interactive API specification is available at `/docs`. Android clients 
 | Model training | `POST /train` | JSON: `training_model`, `aggregation_hours`, optional `aggregation_minutes`. |
 | API status | `GET /health` | No body. |
 | Sensor-data status | `GET /health/data` | No body. Verifies that the Railway service can read Supabase measurements. |
+| Cargo transport assessment | `POST /transport/cargo-assessment` | JSON with product name, approved temperature limits, optional humidity limits, and optional sensor values/device. |
+
+## Cargo Transport
+
+The API does not hardcode storage requirements for apples, oranges, or other products. The carrier supplies the approved range from its transport specification, customer contract, or food-safety specialist.
+
+Example request:
+
+```json
+{
+	"product_name": "mere",
+	"min_temperature": 2,
+	"max_temperature": 8,
+	"min_humidity": 80,
+	"max_humidity": 95,
+	"device_identifier": "truck-01-sensor",
+	"temperature": 9.5,
+	"humidity": 88
+}
+```
+
+If `temperature` or `humidity` is omitted, the API reads the latest values for `device_identifier` from Supabase. The response contains `status`, `alerts`, `recommended_temperature`, and `recommended_action`. The API evaluates and recommends a setpoint; an external controller/PLC must perform the physical refrigeration adjustment.
 
 ## Android Screens
 
