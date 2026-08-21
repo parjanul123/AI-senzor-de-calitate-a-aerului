@@ -584,13 +584,13 @@ def save_cargo_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Conexiunea Supabase nu este configurată pentru salvarea profilului.")
 
     record = dict(profile)
-    record["profile_type"] = "cargo_transport"
+    record["profile_type"] = record.get("profile_type", "cargo_transport")
     try:
         existing = (
             client.table("profiles")
             .select("*")
             .eq("profile_id", record["profile_id"])
-            .eq("profile_type", "cargo_transport")
+            .eq("profile_type", record["profile_type"])
             .limit(1)
             .execute()
         ).data or []
@@ -599,7 +599,7 @@ def save_cargo_profile(profile: dict[str, Any]) -> dict[str, Any]:
                 client.table("profiles")
                 .update(record)
                 .eq("profile_id", record["profile_id"])
-                .eq("profile_type", "cargo_transport")
+                .eq("profile_type", record["profile_type"])
                 .execute()
             )
         else:
@@ -617,7 +617,7 @@ def get_cargo_profiles(customer_id: str | None = None) -> list[dict[str, Any]]:
         raise RuntimeError("Conexiunea Supabase nu este configurată pentru citirea profilurilor.")
 
     try:
-        query = client.table("profiles").select("*").eq("profile_type", "cargo_transport")
+        query = client.table("profiles").select("*").in_("profile_type", ["standard", "cargo_transport"])
         if customer_id is not None:
             query = query.eq("customer_id", customer_id)
         response = query.execute()

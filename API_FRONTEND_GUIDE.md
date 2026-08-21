@@ -69,11 +69,12 @@ Supported parameter names are `temperature`, `humidity`, `pm25`, `pm10`, `co2`, 
 
 ### Reusable Profile
 
-Create the product profile once:
+Create the standard profile once with the values already approved in your current system:
 
 ```json
 {
 	"profile_id": "firma-1-mere-standard",
+	"profile_type": "standard",
 	"customer_id": "firma-1",
 	"product_name": "mere",
 	"min_temperature": 2,
@@ -87,7 +88,7 @@ Create the product profile once:
 }
 ```
 
-Then assess each truck using only the saved profile and current readings:
+The `GET /transport/profiles` response contains this `standard` profile together with all profiles having `profile_type: "cargo_transport"`. Then assess each truck using only the saved profile and current readings:
 
 ```json
 {

@@ -160,6 +160,7 @@ class CargoAssessmentResponse(BaseModel):
 
 class CargoProfile(BaseModel):
     profile_id: str = Field(min_length=1, max_length=100)
+    profile_type: Literal["standard", "cargo_transport"] = "cargo_transport"
     customer_id: Optional[str] = Field(default=None, max_length=100)
     product_name: str = Field(min_length=1, max_length=120)
     min_temperature: float = Field(ge=-80, le=80)

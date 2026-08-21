@@ -16,8 +16,8 @@ alter table public.profiles
 
 create unique index if not exists profiles_cargo_profile_id_unique
     on public.profiles (profile_id)
-    where profile_type = 'cargo_transport' and profile_id is not null;
+    where profile_type in ('standard', 'cargo_transport') and profile_id is not null;
 
 create index if not exists profiles_cargo_customer_id_idx
     on public.profiles (customer_id)
-    where profile_type = 'cargo_transport';
+    where profile_type in ('standard', 'cargo_transport');
