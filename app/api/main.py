@@ -82,10 +82,31 @@ class CargoTemperaturePolicy(BaseModel):
         return self
 
 
+class ParameterLimit(BaseModel):
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_limits(self):
+        if self.min_value is None and self.max_value is None:
+            raise ValueError("Trebuie configurata cel putin o limita: min_value sau max_value.")
+        if self.min_value is not None and self.max_value is not None and self.min_value > self.max_value:
+            raise ValueError("min_value trebuie sa fie <= max_value.")
+        return self
+
+
 class CargoAssessmentRequest(CargoTemperaturePolicy):
     device_identifier: Optional[str] = Field(default=None, description="Dispozitivul din care se citesc valorile.")
     temperature: Optional[float] = Field(default=None, ge=-80, le=80)
     humidity: Optional[float] = Field(default=None, ge=0, le=100)
+    parameter_limits: dict[str, ParameterLimit] = Field(
+        default_factory=dict,
+        description="Limite min/max configurate pentru orice parametru senzorial.",
+    )
+    parameter_values: dict[str, float] = Field(
+        default_factory=dict,
+        description="Valori senzoriale trimise direct de client pentru parametrii configurati.",
+    )
 
 
 class CargoAssessmentResponse(BaseModel):
@@ -99,6 +120,8 @@ class CargoAssessmentResponse(BaseModel):
     recommended_temperature: float
     recommended_action: str
     alerts: list[str] = Field(default_factory=list)
+    parameter_status: dict[str, str] = Field(default_factory=dict)
+    parameter_values: dict[str, float] = Field(default_factory=dict)
 
 
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
@@ -252,6 +275,36 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
     measured_humidity = request.humidity
     resolved_device_identifier = (request.device_identifier or "").strip() or None
 
+    supported_parameters = {"temperature", "humidity", "pm25", "pm10", "co2", "voc"}
+    unknown_parameters = set(request.parameter_limits) - supported_parameters
+    if unknown_parameters:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Parametri necunoscuti: {', '.join(sorted(unknown_parameters))}.",
+        )
+
+    configured_limits = dict(request.parameter_limits)
+    if "temperature" not in configured_limits:
+        configured_limits["temperature"] = ParameterLimit(
+            min_value=request.min_temperature,
+            max_value=request.max_temperature,
+        )
+    if request.min_humidity is not None or request.max_humidity is not None:
+        configured_limits.setdefault(
+            "humidity",
+            ParameterLimit(min_value=request.min_humidity, max_value=request.max_humidity),
+        )
+
+    parameter_values = dict(request.parameter_values)
+    if measured_temperature is None:
+        measured_temperature = parameter_values.get("temperature")
+    if measured_humidity is None:
+        measured_humidity = parameter_values.get("humidity")
+    if measured_temperature is not None:
+        parameter_values["temperature"] = measured_temperature
+    if measured_humidity is not None:
+        parameter_values["humidity"] = measured_humidity
+
     if measured_temperature is None or measured_humidity is None:
         try:
             measurements = get_measurements(
@@ -269,10 +322,31 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
                 measured_temperature = _extract_numeric_value(latest, ("temperature", "temperatura", "temp"))
             if measured_humidity is None:
                 measured_humidity = _extract_numeric_value(latest, ("humidity", "umiditate"))
+            for parameter_name, candidates in {
+                "pm25": ("pm25", "pm2_5", "pm2.5"),
+                "pm10": ("pm10",),
+                "co2": ("co2", "co_2"),
+                "voc": ("voc", "tvoc"),
+            }.items():
+                if parameter_name not in parameter_values:
+                    value = _extract_numeric_value(latest, candidates)
+                    if value is not None:
+                        parameter_values[parameter_name] = value
 
+    if measured_temperature is not None:
+        parameter_values["temperature"] = measured_temperature
+    if measured_humidity is not None:
+        parameter_values["humidity"] = measured_humidity
+
+    temperature_limits = configured_limits["temperature"]
+    effective_min_temperature = temperature_limits.min_value
+    effective_max_temperature = temperature_limits.max_value
     recommended_temperature = request.target_temperature
     if recommended_temperature is None:
-        recommended_temperature = (request.min_temperature + request.max_temperature) / 2
+        recommended_temperature = (
+            (effective_min_temperature or request.min_temperature)
+            + (effective_max_temperature or request.max_temperature)
+        ) / 2
 
     policy_payload = {
         "min_temperature": request.min_temperature,
@@ -280,6 +354,10 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         "min_humidity": request.min_humidity,
         "max_humidity": request.max_humidity,
         "target_temperature": recommended_temperature,
+        "parameter_limits": {
+            parameter_name: limit.model_dump()
+            for parameter_name, limit in configured_limits.items()
+        },
     }
 
     if measured_temperature is None:
@@ -294,17 +372,20 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         )
 
     alerts: list[str] = []
-    if measured_temperature < request.min_temperature:
+    parameter_status: dict[str, str] = {}
+    if effective_min_temperature is not None and measured_temperature < effective_min_temperature:
         status = "too_cold"
         alerts.append("Temperatura este sub limita configurată pentru produs.")
         action = "Crește temperatura treptat spre setpointul recomandat și verifică riscul de îngheț."
-    elif measured_temperature > request.max_temperature:
+    elif effective_max_temperature is not None and measured_temperature > effective_max_temperature:
         status = "too_hot"
         alerts.append("Temperatura este peste limita configurată pentru produs.")
         action = "Activează răcirea și readu temperatura treptat spre setpointul recomandat."
     else:
         status = "within_limits"
         action = "Menține temperatura în intervalul configurat și continuă monitorizarea."
+
+    parameter_status["temperature"] = status
 
     if measured_humidity is not None:
         humidity_out = (
@@ -316,6 +397,22 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
             alerts.append("Umiditatea este în afara limitelor configurate.")
             if status == "within_limits":
                 status = "humidity_out_of_range"
+            parameter_status["humidity"] = "out_of_range"
+        else:
+            parameter_status["humidity"] = "within_limits"
+
+    for parameter_name, limits in configured_limits.items():
+        value = parameter_values.get(parameter_name)
+        if value is None or parameter_name in {"temperature", "humidity"}:
+            continue
+        if limits.min_value is not None and value < limits.min_value:
+            parameter_status[parameter_name] = "below_min"
+            alerts.append(f"{parameter_name} este sub limita minima configurata.")
+        elif limits.max_value is not None and value > limits.max_value:
+            parameter_status[parameter_name] = "above_max"
+            alerts.append(f"{parameter_name} este peste limita maxima configurata.")
+        else:
+            parameter_status[parameter_name] = "within_limits"
 
     return CargoAssessmentResponse(
         status=status,
@@ -328,6 +425,8 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         recommended_temperature=recommended_temperature,
         recommended_action=action,
         alerts=alerts,
+        parameter_status=parameter_status,
+        parameter_values=parameter_values,
     )
 
 

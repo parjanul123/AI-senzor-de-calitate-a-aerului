@@ -40,6 +40,30 @@ Example request:
 
 If `temperature` or `humidity` is omitted, the API reads the latest values for `device_identifier` from Supabase. The response contains `status`, `alerts`, `recommended_temperature`, and `recommended_action`. The API evaluates and recommends a setpoint; an external controller/PLC must perform the physical refrigeration adjustment.
 
+For additional parameters, send per-parameter limits and values:
+
+```json
+{
+	"product_name": "portocale",
+	"min_temperature": 3,
+	"max_temperature": 8,
+	"parameter_limits": {
+		"temperature": {"min_value": 3, "max_value": 8},
+		"humidity": {"min_value": 85, "max_value": 95},
+		"co2": {"max_value": 1000},
+		"voc": {"max_value": 250}
+	},
+	"parameter_values": {
+		"temperature": 6,
+		"humidity": 90,
+		"co2": 1200,
+		"voc": 180
+	}
+}
+```
+
+Supported parameter names are `temperature`, `humidity`, `pm25`, `pm10`, `co2`, and `voc`. The response exposes `parameter_status` and `parameter_values`, so a client can decide whether to adjust cooling, ventilation, or another actuator.
+
 ## Android Screens
 
 Create the following screens or actions:
