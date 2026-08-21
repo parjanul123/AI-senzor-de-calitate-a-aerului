@@ -15,7 +15,7 @@ from app.models.train_model import (
 )
 from app.models.xgboost_model import train_and_save_xgboost
 from app.core.database import get_device_identifiers, get_devices_with_location, get_measurements
-from app.services.chatbot import get_chatbot_reply, get_chatbot_welcome_message
+from app.services.chatbot import get_chatbot_reply_details, get_chatbot_welcome_message
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
 
@@ -155,6 +155,11 @@ class ChatResponse(BaseModel):
     selected: Optional[str] = None
     device_changed: bool = False
     device_change_message: Optional[str] = None
+    models_used: list[str] = Field(default_factory=list)
+    bert_available: bool = False
+    bert_model: Optional[str] = None
+    bert_feature: Optional[str] = None
+    response_engine: str = "rule_based_chatbot"
 
 
 class ChatWelcomeResponse(BaseModel):
@@ -574,19 +579,29 @@ def chat(request: ChatRequest):
             selected=resolved_device_identifier,
             device_changed=device_changed,
             device_change_message=device_change_message,
+            models_used=["rule_based_chatbot"],
+            response_engine="rule_based_chatbot",
         )
 
     model_outputs = {
         "latest_prediction": getattr(app.state, "latest_prediction", None),
         "latest_training": getattr(app.state, "latest_training", None),
     }
+    reply_details = {
+        "models_used": ["rule_based_chatbot"],
+        "bert_available": False,
+        "bert_model": None,
+        "bert_feature": None,
+        "response_engine": "rule_based_chatbot",
+    }
     try:
-        reply = get_chatbot_reply(
+        reply_details = get_chatbot_reply_details(
             message,
             model_outputs=model_outputs,
             conversation_history=[] if device_changed else [chat_message.model_dump() for chat_message in request.history],
             device_identifier=resolved_device_identifier,
         )
+        reply = reply_details["reply"]
     except Exception:
         # Never bubble up a 500 here: a raw HTTP error makes the mobile client
         # show a generic "AI indisponibil" message far more often than needed.
@@ -602,6 +617,11 @@ def chat(request: ChatRequest):
         selected=resolved_device_identifier,
         device_changed=device_changed,
         device_change_message=device_change_message,
+        models_used=reply_details.get("models_used", []),
+        bert_available=reply_details.get("bert_available", False),
+        bert_model=reply_details.get("bert_model"),
+        bert_feature=reply_details.get("bert_feature"),
+        response_engine=reply_details.get("response_engine", "rule_based_chatbot"),
     )
 
 

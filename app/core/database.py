@@ -1,6 +1,6 @@
 import logging
-import os
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -617,11 +617,6 @@ def _save_local_chatbot_notes(notes: list[dict[str, Any]]) -> None:
 
 
 def save_chatbot_note(note_text: str, device_identifier: Optional[str] = None) -> bool:
-    """Persist a fact/instruction the user taught the chatbot so it can be recalled later.
-
-    Tries the Supabase 'chatbot_notes' table first (see db/chatbot_notes_migration.sql)
-    and falls back to a local JSON file when Supabase is unavailable or the table is missing.
-    """
     note_text = (note_text or "").strip()
     if not note_text:
         return False
@@ -647,7 +642,6 @@ def save_chatbot_note(note_text: str, device_identifier: Optional[str] = None) -
 
 
 def get_chatbot_notes(device_identifier: Optional[str] = None) -> list[dict[str, Any]]:
-    """Return learned chatbot notes: global notes plus any scoped to the given device."""
     records: Optional[list[dict[str, Any]]] = None
 
     client = _create_supabase_client()
@@ -657,7 +651,6 @@ def get_chatbot_notes(device_identifier: Optional[str] = None) -> list[dict[str,
             records = response.data or []
         except Exception as exc:
             logger.debug("Failed to read chatbot notes from Supabase, using local fallback: %s", exc)
-            records = None
 
     if records is None:
         records = _load_local_chatbot_notes()

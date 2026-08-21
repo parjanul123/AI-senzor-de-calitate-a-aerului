@@ -27,7 +27,7 @@ from app.core.database import (
     get_measurements,
     save_chatbot_note,
 )
-from app.services.bert_sensor_detector import detect_sensor_features
+from app.services.bert_sensor_detector import detect_sensor_features, get_bert_model_name
 from app.services.predictor import build_forecast, predict_air_quality
 
 
@@ -1605,6 +1605,8 @@ def get_chatbot_reply(
 
     is_live_question = chatbot.is_live_data_question(normalized)
     is_location_question = chatbot.is_location_question(normalized)
+    is_devices_question = chatbot.is_devices_question(normalized)
+    is_capabilities_question = chatbot.is_capabilities_question(normalized)
     # A forecast question (e.g. "cat va fi temperatura peste 2 ore") mentions a parameter name too,
     # so it must win over the generic reference/definition lookup below instead of being intercepted.
     is_forecast_question = chatbot.is_forecast_question(normalized)
@@ -1646,7 +1648,13 @@ def get_chatbot_reply(
     if CHATBOT_ENABLE_LEARNING:
         context.learned_notes = get_chatbot_notes(device_identifier=device_identifier)
 
-    if is_live_question or is_location_question or is_forecast_question:
+    if (
+        is_live_question
+        or is_location_question
+        or is_forecast_question
+        or is_devices_question
+        or is_capabilities_question
+    ):
         return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
 
     llm_reply = _generate_ollama_reply(
@@ -1658,6 +1666,38 @@ def get_chatbot_reply(
         return llm_reply
 
     return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
+
+
+def get_chatbot_reply_details(
+    message: str,
+    model_outputs: dict[str, Any] | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
+    device_identifier: str | None = None,
+) -> dict[str, Any]:
+    """Return the chatbot reply together with BERT routing evidence."""
+    bert_feature = None
+    bert_available = False
+    try:
+        bert_features = detect_sensor_features(message)
+        bert_feature = bert_features[0] if bert_features else None
+        bert_available = True
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+        bert_available = False
+
+    reply = get_chatbot_reply(
+        message,
+        model_outputs=model_outputs,
+        conversation_history=conversation_history,
+        device_identifier=device_identifier,
+    )
+    return {
+        "reply": reply,
+        "models_used": ["rule_based_chatbot", "bert_sensor_intent"] if bert_available else ["rule_based_chatbot"],
+        "bert_available": bert_available,
+        "bert_model": get_bert_model_name(),
+        "bert_feature": bert_feature,
+        "response_engine": "ollama" if CHATBOT_USE_OLLAMA else "rule_based_chatbot",
+    }
 
 
 def get_chatbot_welcome_message() -> str:

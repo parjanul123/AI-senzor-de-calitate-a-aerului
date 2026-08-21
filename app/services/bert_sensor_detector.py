@@ -17,13 +17,17 @@ SENSOR_PROTOTYPES: dict[str, tuple[str, ...]] = {
 }
 
 
+def get_bert_model_name() -> str:
+    return os.getenv("CHATBOT_BERT_MODEL", "google-bert/bert-base-multilingual-cased")
+
+
 @lru_cache(maxsize=1)
 def _load_bert() -> tuple[Any, Any, Any] | None:
     try:
         import torch
         from transformers import AutoModel, AutoTokenizer
 
-        model_name = os.getenv("CHATBOT_BERT_MODEL", "google-bert/bert-base-multilingual-cased")
+        model_name = get_bert_model_name()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name)
         model.eval()
