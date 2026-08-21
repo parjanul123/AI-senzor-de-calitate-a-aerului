@@ -482,7 +482,12 @@ class RuleBasedAirQualityChatbot:
             "device_identifier": device_identifier,
         }
 
-    def generate_reply(self, message: str, context: ChatbotContext) -> str:
+    def generate_reply(
+        self,
+        message: str,
+        context: ChatbotContext,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
         normalized = (message or "").strip().lower()
 
         if not normalized:
@@ -503,7 +508,9 @@ class RuleBasedAirQualityChatbot:
             return self._format_device_location_reply(context)
 
         if self.is_forecast_question(normalized):
-            forecast_reply = self._format_forecast_question_reply(context, normalized)
+            forecast_reply = self._format_forecast_question_reply(
+                context, normalized, conversation_history=conversation_history
+            )
             if forecast_reply:
                 return forecast_reply
 
@@ -804,12 +811,32 @@ class RuleBasedAirQualityChatbot:
         )
 
     @staticmethod
-    def _format_forecast_question_reply(context: ChatbotContext, normalized_message: str) -> str | None:
+    def _find_forecast_feature_in_history(conversation_history: list[dict[str, str]] | None) -> str | None:
+        """Recall the last forecast/live feature the user mentioned, for follow-up questions like 'dar peste 3 ore?'."""
+        for history_message in reversed((conversation_history or [])[-12:]):
+            if history_message.get("role") != "user":
+                continue
+            content = (history_message.get("content") or "").strip().lower()
+            if not content:
+                continue
+            feature = RuleBasedAirQualityChatbot._extract_forecast_feature(content)
+            if feature is not None:
+                return feature
+        return None
+
+    @staticmethod
+    def _format_forecast_question_reply(
+        context: ChatbotContext,
+        normalized_message: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str | None:
         horizon_hours = RuleBasedAirQualityChatbot._extract_forecast_horizon_hours(normalized_message)
         if horizon_hours is None:
             return None
 
         requested_feature = RuleBasedAirQualityChatbot._extract_forecast_feature(normalized_message)
+        if requested_feature is None:
+            requested_feature = RuleBasedAirQualityChatbot._find_forecast_feature_in_history(conversation_history)
         if requested_feature is None:
             return (
                 "Pot calcula prognoza, dar spune-mi și parametrul dorit (ex: temperatură, umiditate, PM2.5, PM10, CO2)."
@@ -1348,6 +1375,13 @@ def _build_ollama_messages(
         "utilizatorului să ruleze Predict dacă latest_prediction există deja în context, "
         "ci răspunde direct folosind acele valori (inclusiv pentru anomalii, recomandări, PM2.5 sau CO2). "
         "Cere rularea Predict/Train doar dacă informația relevantă lipsește cu adevărat din context. "
+        "Dacă utilizatorul cere o predicție generală, fără să numească un singur parametru "
+        "(ex: 'vreau o predicție', 'cum e calitatea aerului'), rezumă TOATE valorile relevante din "
+        "input_values/feature_assessment (temperatură, umiditate, PM2.5, PM10, CO2), nu doar una singură. "
+        "Dacă utilizatorul întreabă despre un singur parametru (ex: doar PM2.5), poți răspunde punctual pe acela. "
+        "Ține cont de istoricul conversației: dacă un mesaj anterior a menționat un parametru sau un orizont de timp "
+        "(ex: 'peste 2 ore'), iar mesajul curent este un follow-up scurt (ex: 'dar peste 3 ore?'), presupune același "
+        "parametru și răspunde coerent, fără să spui că nu înțelegi contextul. "
         "Pentru întrebări conceptuale (unități, praguri, intervale), folosești reference_ranges "
         "și NU răspunzi că lipsesc datele dacă informația există în reference_ranges. "
         "Închide răspunsul, când are sens, cu o întrebare scurtă de continuare."
@@ -1364,6 +1398,13 @@ def _build_ollama_messages(
     few_shot_assistant_2 = (
         "Pot să-ți spun rapid performanța modelului dacă am un training recent. "
         "Dacă nu există rezultate de antrenare, rulează Train și revin cu acuratețe, precizie și F1."
+    )
+
+    few_shot_user_2b = "Vreau o predicție"
+    few_shot_assistant_2b = (
+        "Din latest_prediction, calitatea aerului este momentan bună: temperatura și umiditatea sunt normale, "
+        "iar PM2.5, PM10 și CO2 se încadrează în limite obișnuite. "
+        "Vrei să detaliez vreunul dintre acești indicatori?"
     )
 
     few_shot_user_3 = "Ce inseamna ug/m3?"
@@ -1393,6 +1434,8 @@ def _build_ollama_messages(
         {"role": "assistant", "content": few_shot_assistant_1},
         {"role": "user", "content": few_shot_user_2},
         {"role": "assistant", "content": few_shot_assistant_2},
+        {"role": "user", "content": few_shot_user_2b},
+        {"role": "assistant", "content": few_shot_assistant_2b},
         {"role": "user", "content": few_shot_user_3},
         {"role": "assistant", "content": few_shot_assistant_3},
         {"role": "user", "content": few_shot_user_4},
@@ -1463,12 +1506,15 @@ def get_chatbot_reply(
     normalized = (message or "").strip().lower()
     is_live_question = chatbot.is_live_data_question(normalized)
     is_location_question = chatbot.is_location_question(normalized)
+    # A forecast question (e.g. "cat va fi temperatura peste 2 ore") mentions a parameter name too,
+    # so it must win over the generic reference/definition lookup below instead of being intercepted.
+    is_forecast_question = chatbot.is_forecast_question(normalized)
     if is_live_question or chatbot.needs_live_prediction(normalized):
         model_outputs = model_outputs if model_outputs is not None else {}
         chatbot.try_build_live_prediction(model_outputs, device_identifier=device_identifier)
     detected_topics = chatbot.detect_reference_topics(normalized)
 
-    if detected_topics and not is_live_question:
+    if detected_topics and not is_live_question and not is_forecast_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
@@ -1489,7 +1535,7 @@ def get_chatbot_reply(
         "ridicat",
         "bun",
     ]
-    if any(token in normalized for token in reference_intent_tokens) and not is_live_question:
+    if any(token in normalized for token in reference_intent_tokens) and not is_live_question and not is_forecast_question:
         reference_reply = chatbot.build_reference_reply(message, normalized)
         if reference_reply:
             return reference_reply
@@ -1499,8 +1545,8 @@ def get_chatbot_reply(
         device_identifier=device_identifier,
     )
 
-    if is_live_question or is_location_question:
-        return chatbot.generate_reply(message=message, context=context)
+    if is_live_question or is_location_question or is_forecast_question:
+        return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
 
     llm_reply = _generate_ollama_reply(
         message=message,
@@ -1510,7 +1556,7 @@ def get_chatbot_reply(
     if llm_reply:
         return llm_reply
 
-    return chatbot.generate_reply(message=message, context=context)
+    return chatbot.generate_reply(message=message, context=context, conversation_history=conversation_history)
 
 
 def get_chatbot_welcome_message() -> str:
