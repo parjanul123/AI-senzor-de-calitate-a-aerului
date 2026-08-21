@@ -578,6 +578,59 @@ def summarize_measurements(dataframe: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def save_cargo_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    client = _create_supabase_client()
+    if client is None:
+        raise RuntimeError("Conexiunea Supabase nu este configurată pentru salvarea profilului.")
+
+    record = dict(profile)
+    record["profile_type"] = "cargo_transport"
+    try:
+        existing = (
+            client.table("profiles")
+            .select("*")
+            .eq("profile_id", record["profile_id"])
+            .eq("profile_type", "cargo_transport")
+            .limit(1)
+            .execute()
+        ).data or []
+        if existing:
+            response = (
+                client.table("profiles")
+                .update(record)
+                .eq("profile_id", record["profile_id"])
+                .eq("profile_type", "cargo_transport")
+                .execute()
+            )
+        else:
+            response = client.table("profiles").insert(record).execute()
+    except Exception as exc:
+        raise RuntimeError(f"Salvarea profilului în tabela profiles a eșuat: {exc}") from exc
+
+    rows = response.data or []
+    return rows[0] if rows else record
+
+
+def get_cargo_profiles(customer_id: str | None = None) -> list[dict[str, Any]]:
+    client = _create_supabase_client()
+    if client is None:
+        raise RuntimeError("Conexiunea Supabase nu este configurată pentru citirea profilurilor.")
+
+    try:
+        query = client.table("profiles").select("*").eq("profile_type", "cargo_transport")
+        if customer_id is not None:
+            query = query.eq("customer_id", customer_id)
+        response = query.execute()
+    except Exception as exc:
+        raise RuntimeError(f"Citirea profilurilor din tabela profiles a eșuat: {exc}") from exc
+    return response.data or []
+
+
+def get_cargo_profile(profile_id: str) -> dict[str, Any] | None:
+    profiles = get_cargo_profiles()
+    return next((profile for profile in profiles if str(profile.get("profile_id")) == profile_id), None)
+
+
 def get_supabase_config_status() -> dict[str, Any]:
     load_dotenv(dotenv_path=ENV_PATH, override=True)
 

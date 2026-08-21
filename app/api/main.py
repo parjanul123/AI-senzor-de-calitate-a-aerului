@@ -15,7 +15,14 @@ from app.models.train_model import (
     train_and_save_svm,
 )
 from app.models.xgboost_model import train_and_save_xgboost
-from app.core.database import get_device_identifiers, get_devices_with_location, get_measurements
+from app.core.database import (
+    get_cargo_profile as get_cargo_profile_record,
+    get_cargo_profiles,
+    get_device_identifiers,
+    get_devices_with_location,
+    get_measurements,
+    save_cargo_profile,
+)
 from app.services.chatbot import get_chatbot_reply_details, get_chatbot_welcome_message
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
@@ -364,24 +371,31 @@ def create_cargo_profile(profile: CargoProfile):
             status_code=422,
             detail=f"Parametri necunoscuti: {', '.join(sorted(unknown_parameters))}.",
         )
-    app.state.cargo_profiles[profile.profile_id] = profile.model_dump()
-    return profile
+    try:
+        saved_profile = save_cargo_profile(profile.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return CargoProfile.model_validate(saved_profile)
 
 
 @app.get("/transport/profiles", response_model=list[CargoProfile])
 def list_cargo_profiles(customer_id: str | None = Query(default=None)):
-    profiles = list(app.state.cargo_profiles.values())
-    if customer_id is not None:
-        profiles = [profile for profile in profiles if profile.get("customer_id") == customer_id]
-    return profiles
+    try:
+        profiles = get_cargo_profiles(customer_id=customer_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return [CargoProfile.model_validate(profile) for profile in profiles]
 
 
 @app.get("/transport/profiles/{profile_id}", response_model=CargoProfile)
 def get_cargo_profile(profile_id: str):
-    profile = app.state.cargo_profiles.get(profile_id)
+    try:
+        profile = get_cargo_profile_record(profile_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if profile is None:
         raise HTTPException(status_code=404, detail="Profilul de transport nu există.")
-    return profile
+    return CargoProfile.model_validate(profile)
 
 
 @app.post("/transport/cargo-assessment", response_model=CargoAssessmentResponse)
@@ -393,7 +407,10 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
     """
     profile = None
     if request.profile_id:
-        profile = app.state.cargo_profiles.get(request.profile_id)
+        try:
+            profile = get_cargo_profile_record(request.profile_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if profile is None:
             raise HTTPException(status_code=404, detail="Profilul de transport nu există.")
 

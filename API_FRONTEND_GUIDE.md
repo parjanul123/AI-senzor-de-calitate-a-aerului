@@ -101,7 +101,7 @@ Then assess each truck using only the saved profile and current readings:
 }
 ```
 
-Profiles are held in the API process memory. For durable multi-instance production storage, persist the same profile model in a customer-scoped Supabase table and enforce authentication/authorization by `customer_id`.
+Profiles are saved and read from the Supabase `profiles` table with `profile_type = "cargo_transport"`. Run [db/cargo_profiles_migration.sql](db/cargo_profiles_migration.sql) in Supabase SQL Editor before using the profile endpoints. In production, enforce authentication/authorization by `customer_id` before exposing profiles to a customer.
 
 When `research_product` is enabled, the API normalizes common Romanian fruit names to a semantic term (`banane` -> `banana`, `mere` -> `apple`, `portocale` -> `orange`) and returns `product_semantic_term` plus `product_research.results`. Research is informational only; configured profile limits remain the authoritative rules for alerts and recommendations. The response includes the search query and source URLs when available.
 
