@@ -80,6 +80,7 @@ Create the product profile once:
 	"max_temperature": 8,
 	"min_humidity": 80,
 	"max_humidity": 95,
+	"research_product": true,
 	"parameter_limits": {
 		"co2": {"max_value": 1000}
 	}
@@ -101,6 +102,8 @@ Then assess each truck using only the saved profile and current readings:
 ```
 
 Profiles are held in the API process memory. For durable multi-instance production storage, persist the same profile model in a customer-scoped Supabase table and enforce authentication/authorization by `customer_id`.
+
+When `research_product` is enabled, the API normalizes common Romanian fruit names to a semantic term (`banane` -> `banana`, `mere` -> `apple`, `portocale` -> `orange`) and returns `product_semantic_term` plus `product_research.results`. Research is informational only; configured profile limits remain the authoritative rules for alerts and recommendations. The response includes the search query and source URLs when available.
 
 ## Android Screens
 

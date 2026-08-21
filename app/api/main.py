@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 from typing import Any, Literal, Optional
 import pandas as pd
 import numpy as np
+import requests
 from pathlib import Path
 
 from app.models.train_model import (
@@ -115,6 +116,7 @@ class CargoAssessmentRequest(BaseModel):
         default_factory=dict,
         description="Valori senzoriale trimise direct de client pentru parametrii configurati.",
     )
+    research_product: Optional[bool] = Field(default=None)
 
     @model_validator(mode="after")
     def validate_inline_policy(self):
@@ -145,6 +147,8 @@ class CargoAssessmentResponse(BaseModel):
     parameter_status: dict[str, str] = Field(default_factory=dict)
     parameter_values: dict[str, float] = Field(default_factory=dict)
     profile_id: Optional[str] = None
+    product_semantic_term: Optional[str] = None
+    product_research: dict[str, Any] | None = None
 
 
 class CargoProfile(BaseModel):
@@ -157,6 +161,7 @@ class CargoProfile(BaseModel):
     max_humidity: Optional[float] = Field(default=None, ge=0, le=100)
     target_temperature: Optional[float] = Field(default=None, ge=-80, le=80)
     parameter_limits: dict[str, ParameterLimit] = Field(default_factory=dict)
+    research_product: bool = False
 
     @model_validator(mode="after")
     def validate_profile(self):
@@ -165,6 +170,48 @@ class CargoProfile(BaseModel):
         if self.min_humidity is not None and self.max_humidity is not None and self.min_humidity > self.max_humidity:
             raise ValueError("min_humidity trebuie sa fie <= max_humidity.")
         return self
+
+
+PRODUCT_SEMANTIC_ALIASES = {
+    "banane": "banana", "banana": "banana", "mere": "apple", "măr": "apple",
+    "merele": "apple", "portocale": "orange", "portocală": "orange",
+    "struguri": "grape", "căpșuni": "strawberry", "capsuni": "strawberry",
+    "avocado": "avocado", "kiwi": "kiwi", "piersici": "peach", "pere": "pear",
+    "pepene": "watermelon", "cireșe": "cherry", "cirese": "cherry",
+}
+
+
+def _semantic_product_term(product_name: str) -> str:
+    normalized = product_name.strip().casefold()
+    return next(
+        (semantic for alias, semantic in PRODUCT_SEMANTIC_ALIASES.items() if alias in normalized),
+        normalized,
+    )
+
+
+def _research_product_transport(product_name: str, semantic_term: str) -> dict[str, Any]:
+    query = f"{product_name} ({semantic_term}) transport storage temperature humidity fruit"
+    try:
+        response = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return {"status": "unavailable", "query": query, "results": []}
+
+    results: list[dict[str, str]] = []
+    abstract = (payload.get("AbstractText") or "").strip()
+    if abstract:
+        results.append({"text": abstract, "url": (payload.get("AbstractURL") or "").strip()})
+    for topic in payload.get("RelatedTopics") or []:
+        if isinstance(topic, dict) and topic.get("Text"):
+            results.append({"text": topic["Text"].strip(), "url": (topic.get("FirstURL") or "").strip()})
+        if len(results) >= 3:
+            break
+    return {"status": "found" if results else "no_results", "query": query, "results": results}
 
 
 def _parse_forecast_horizons(raw_horizons: str) -> list[int]:
@@ -351,6 +398,9 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
             raise HTTPException(status_code=404, detail="Profilul de transport nu există.")
 
     product_name = profile["product_name"] if profile else request.product_name
+    semantic_term = _semantic_product_term(product_name)
+    research_enabled = profile.get("research_product", False) if profile else bool(request.research_product)
+    product_research = _research_product_transport(product_name, semantic_term) if research_enabled else None
     min_temperature = profile["min_temperature"] if profile else request.min_temperature
     max_temperature = profile["max_temperature"] if profile else request.max_temperature
     min_humidity = profile.get("min_humidity") if profile else request.min_humidity
@@ -459,6 +509,9 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
             policy=policy_payload,
             recommended_temperature=recommended_temperature,
             recommended_action="Trimite temperatura senzorului sau configurează un device_identifier valid.",
+            profile_id=request.profile_id,
+            product_semantic_term=semantic_term,
+            product_research=product_research,
         )
 
     alerts: list[str] = []
@@ -518,6 +571,8 @@ def assess_cargo_transport(request: CargoAssessmentRequest):
         parameter_status=parameter_status,
         parameter_values=parameter_values,
         profile_id=request.profile_id,
+        product_semantic_term=semantic_term,
+        product_research=product_research,
     )
 
 
