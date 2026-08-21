@@ -234,13 +234,21 @@ class ChatbotContext:
 class RuleBasedAirQualityChatbot:
     """Simple rule-based chatbot designed to be replaceable with an LLM later."""
 
-    def build_context(self, model_outputs: dict[str, Any] | None = None) -> ChatbotContext:
+    def build_context(
+        self,
+        model_outputs: dict[str, Any] | None = None,
+        device_identifier: str | None = None,
+    ) -> ChatbotContext:
         latest_measurement = None
 
         # The API layer remains resilient even if database access fails.
         with suppress(RuntimeError, ValueError, KeyError, TypeError):
             # Chat needs only the newest row; avoid loading the full table on each message.
-            df = get_measurements(limit=1, descending=True)
+            df = get_measurements(
+                limit=1,
+                descending=True,
+                device_identifier=device_identifier,
+            )
             if not df.empty:
                 latest_measurement = self._extract_latest_measurement(df)
 
@@ -273,11 +281,17 @@ class RuleBasedAirQualityChatbot:
         return features
 
     @staticmethod
-    def try_build_live_prediction(model_outputs: dict[str, Any]) -> None:
-        if model_outputs.get("latest_prediction"):
+    def try_build_live_prediction(
+        model_outputs: dict[str, Any],
+        device_identifier: str | None = None,
+    ) -> None:
+        existing_prediction = model_outputs.get("latest_prediction")
+        if existing_prediction and existing_prediction.get("device_identifier") == device_identifier:
             return
         try:
-            prediction, confidence, feature_values, feature_assessment = predict_air_quality()
+            prediction, confidence, feature_values, feature_assessment = predict_air_quality(
+                device_identifier=device_identifier,
+            )
         except (RuntimeError, ValueError, KeyError, TypeError, OSError):
             return
         model_outputs["latest_prediction"] = {
@@ -285,6 +299,7 @@ class RuleBasedAirQualityChatbot:
             "confidence": confidence,
             "input_values": feature_values,
             "feature_assessment": feature_assessment,
+            "device_identifier": device_identifier,
         }
 
     def generate_reply(self, message: str, context: ChatbotContext) -> str:
@@ -1052,6 +1067,7 @@ def get_chatbot_reply(
     message: str,
     model_outputs: dict[str, Any] | None = None,
     conversation_history: list[dict[str, str]] | None = None,
+    device_identifier: str | None = None,
 ) -> str:
     chatbot = RuleBasedAirQualityChatbot()
 
@@ -1059,7 +1075,7 @@ def get_chatbot_reply(
     is_live_question = chatbot.is_live_data_question(normalized)
     if is_live_question:
         model_outputs = model_outputs if model_outputs is not None else {}
-        chatbot.try_build_live_prediction(model_outputs)
+        chatbot.try_build_live_prediction(model_outputs, device_identifier=device_identifier)
     detected_topics = chatbot.detect_reference_topics(normalized)
 
     if detected_topics and not is_live_question:
@@ -1088,7 +1104,10 @@ def get_chatbot_reply(
         if reference_reply:
             return reference_reply
 
-    context = chatbot.build_context(model_outputs=model_outputs)
+    context = chatbot.build_context(
+        model_outputs=model_outputs,
+        device_identifier=device_identifier,
+    )
 
     if is_live_question:
         return chatbot.generate_reply(message=message, context=context)

@@ -239,9 +239,11 @@ elif selected_page == "Predict":
                 if forecast:
                     st.subheader("Prognoza")
                     forecast_rows = []
+                    forecast_device = result.get("device_identifier") or "Toate dispozitivele"
                     for forecast_item in forecast:
                         forecast_rows.append(
                             {
+                                "dispozitiv": forecast_device,
                                 "peste_ore": forecast_item.get("horizon_hours"),
                                 "moment_local": forecast_item.get("forecast_at_local"),
                                 "predictie": forecast_item.get("prediction"),
@@ -807,6 +809,26 @@ elif selected_page == "Database":
 elif selected_page == "Chat":
     st.title("Chat")
     st.write("Asistent rule-based pentru întrebări despre calitatea aerului.")
+    st.chat_message("assistant").write(
+        "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului. "
+        "Pentru a continua, alege un dispozitiv din lista de mai jos."
+    )
+    chat_devices = get_device_options()
+    chat_device = st.selectbox(
+        "Alege dispozitivul pentru chat",
+        options=chat_devices,
+        index=None,
+        placeholder="Selectează un dispozitiv",
+        key="chat_device",
+    ) if chat_devices else None
+
+    if chat_device is None:
+        st.warning("Alege un dispozitiv pentru a putea continua conversația.")
+
+    previous_chat_device = st.session_state.get("chat_device_previous")
+    if chat_device != previous_chat_device:
+        st.session_state.chat_history = []
+        st.session_state.chat_device_previous = chat_device
 
     # Initialize session state for chat history
     if "chat_history" not in st.session_state:
@@ -827,10 +849,16 @@ elif selected_page == "Chat":
         user_input = st.text_input(
             "Mesaj",
             placeholder="Ex: Cum interpretez valorile PM2.5 și CO2?",
-            key="chat_input"
+            key="chat_input",
+            disabled=chat_device is None,
         )
     with button_col:
-        send_button = st.button("Trimite", key="send_btn", use_container_width=True)
+        send_button = st.button(
+            "Trimite",
+            key="send_btn",
+            use_container_width=True,
+            disabled=chat_device is None,
+        )
 
     # Process message when send button is clicked
     if send_button and user_input.strip():
@@ -847,6 +875,7 @@ elif selected_page == "Chat":
                 json={
                     "message": user_input,
                     "history": st.session_state.chat_history[:-1][-12:],
+                    "device_identifier": chat_device,
                 },
                 timeout=30,
             )
