@@ -880,7 +880,10 @@ elif selected_page == "Chat":
             )
             response.raise_for_status()
             result = response.json()
-            assistant_reply = result.get('reply', 'Nu am putut obține un răspuns.')
+            assistant_reply = result.get("text") or result.get("reply") or "Nu am putut obține un răspuns."
+            selected_device_value = result.get("selected")
+            if selected_device_value:
+                assistant_reply = f"{assistant_reply}\n\n(Dispozitiv selectat: {selected_device_value})"
 
             # Add assistant response to history
             st.session_state.chat_history.append({

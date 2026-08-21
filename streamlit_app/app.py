@@ -174,7 +174,10 @@ elif selected_page == "Chat":
             result = response.json()
 
             st.success("Răspuns primit")
-            st.write(f"Asistent: {result.get('reply')}")
+            assistant_reply = result.get("text") or result.get("reply") or "Nu am putut obține un răspuns."
+            st.write(f"Asistent: {assistant_reply}")
+            if result.get("selected"):
+                st.caption(f"Dispozitiv selectat: {result.get('selected')}")
         except requests.RequestException as exc:
             st.error(f"Eroare la comunicarea cu endpointul /chat: {exc}")
 else:
