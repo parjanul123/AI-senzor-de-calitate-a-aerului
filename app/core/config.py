@@ -63,3 +63,8 @@ OLLAMA_REPEAT_PENALTY = _env_float("OLLAMA_REPEAT_PENALTY", 1.12)
 CHATBOT_ENABLE_WEB_SEARCH = _env_bool("CHATBOT_ENABLE_WEB_SEARCH", default=True)
 CHATBOT_WEB_SEARCH_TIMEOUT_SECONDS = _env_int("CHATBOT_WEB_SEARCH_TIMEOUT_SECONDS", 10)
 CHATBOT_WEB_SEARCH_MAX_SNIPPETS = _env_int("CHATBOT_WEB_SEARCH_MAX_SNIPPETS", 2)
+
+CHATBOT_ENABLE_LEARNING = _env_bool("CHATBOT_ENABLE_LEARNING", default=True)
+# Local fallback store used whenever the Supabase "chatbot_notes" table is unavailable.
+CHATBOT_NOTES_LOCAL_PATH = DATA_DIR / "chatbot_notes.json"
+
