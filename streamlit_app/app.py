@@ -15,6 +15,7 @@ if PROJECT_ROOT not in sys.path:
 
 from app.core.database import (
     get_device_identifiers,
+    get_devices_with_location,
     get_measurements,
     get_supabase_config_status,
     summarize_measurements,
@@ -117,9 +118,27 @@ elif selected_page == "Database":
         st_autorefresh(interval=refresh_seconds * 1000, key="database_autorefresh")
 
     try:
-        devices = get_device_identifiers()
-        device_options = ["Toate dispozitivele"] + devices if devices else ["Toate dispozitivele"]
-        selected_device = st.selectbox("Device ID / Nume dispozitiv", options=device_options)
+        device_details = get_devices_with_location()
+        if device_details:
+            device_ids = [str(item.get("device_identifier", "")).strip() for item in device_details]
+            device_ids = [item for item in device_ids if item]
+            label_map = {
+                str(item.get("device_identifier", "")).strip(): (
+                    f"{str(item.get('device_identifier', '')).strip()} - {str(item.get('location_label', '')).strip()}"
+                )
+                for item in device_details
+                if str(item.get("device_identifier", "")).strip()
+            }
+        else:
+            device_ids = get_device_identifiers()
+            label_map = {device_id: str(device_id) for device_id in device_ids}
+
+        device_options = ["Toate dispozitivele"] + device_ids if device_ids else ["Toate dispozitivele"]
+        selected_device = st.selectbox(
+            "Device ID / Nume dispozitiv",
+            options=device_options,
+            format_func=lambda value: label_map.get(value, value),
+        )
         filter_value = None if selected_device == "Toate dispozitivele" else selected_device
 
         df = get_measurements(device_identifier=filter_value, limit=20, descending=True, raise_on_error=True)

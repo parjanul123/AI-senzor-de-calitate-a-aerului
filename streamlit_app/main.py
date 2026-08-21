@@ -33,6 +33,7 @@ if existing_app_file and str(SCRIPT_DIR_PATH) in str(existing_app_file):
 
 from app.core.database import (
     get_device_identifiers,
+    get_devices_with_location,
     get_measurements,
     get_supabase_config_status,
     summarize_measurements,
@@ -104,20 +105,41 @@ ALL_DEVICES_OPTION = "Toate dispozitivele"
 
 
 @st.cache_data(ttl=30)
-def get_device_options():
+def get_device_options_with_labels():
     try:
-        return get_device_identifiers()
-    except (RuntimeError, ValueError, KeyError):
+        device_details = get_devices_with_location()
+        options = []
+        for item in device_details:
+            identifier = str(item.get("device_identifier", "")).strip()
+            if not identifier:
+                continue
+            location_label = str(item.get("location_label", "")).strip()
+            label = f"{identifier} - {location_label}" if location_label else identifier
+            options.append({"id": identifier, "label": label})
+        if options:
+            return options
+    except (RuntimeError, ValueError, KeyError, TypeError):
+        pass
+
+    try:
+        return [{"id": device_id, "label": str(device_id)} for device_id in get_device_identifiers()]
+    except (RuntimeError, ValueError, KeyError, TypeError):
         return []
 
 
 def select_device(widget_key: str, label: str = "Dispozitiv (sursa datelor)"):
-    devices = get_device_options()
-    if not devices:
+    available_device_options = get_device_options_with_labels()
+    if not available_device_options:
         st.caption("Nu au fost detectate dispozitive distincte in tabela measurements.")
         return None
 
-    selected = st.selectbox(label, options=[ALL_DEVICES_OPTION] + devices, key=widget_key)
+    label_map = {item["id"]: item["label"] for item in available_device_options}
+    selected = st.selectbox(
+        label,
+        options=[ALL_DEVICES_OPTION] + [item["id"] for item in available_device_options],
+        key=widget_key,
+        format_func=lambda value: label_map.get(value, value),
+    )
     return None if selected == ALL_DEVICES_OPTION else selected
 
 
@@ -812,14 +834,16 @@ elif selected_page == "Chat":
     st.chat_message("assistant").write(
         "Bună, sunt AeroSense, agentul tău pentru temperatura și calitatea aerului."
     )
-    chat_devices = get_device_options()
+    chat_device_options = get_device_options_with_labels()
+    chat_label_map = {item["id"]: item["label"] for item in chat_device_options}
     chat_device = st.selectbox(
         "Alege dispozitivul pentru chat",
-        options=chat_devices,
+        options=[item["id"] for item in chat_device_options],
         index=None,
         placeholder="Selectează un dispozitiv",
         key="chat_device",
-    ) if chat_devices else None
+        format_func=lambda value: chat_label_map.get(value, value),
+    ) if chat_device_options else None
 
     if chat_device is None:
         st.info("Selectează un dispozitiv pentru a putea continua conversația.")

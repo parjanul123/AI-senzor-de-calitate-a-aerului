@@ -24,6 +24,16 @@ DEVICE_ID_CANDIDATES = [
     "name",
 ]
 TIMESTAMP_CANDIDATES = ["created_at", "timestamp", "time", "recorded_at"]
+LATITUDE_CANDIDATES = ["latitude", "lat", "gps_lat", "device_latitude"]
+LONGITUDE_CANDIDATES = ["longitude", "lon", "lng", "gps_lng", "device_longitude"]
+LOCATION_TEXT_CANDIDATES = [
+    "location",
+    "location_name",
+    "locatie",
+    "city",
+    "address",
+    "device_location",
+]
 
 
 def _create_supabase_client() -> Optional[Client]:
@@ -86,6 +96,15 @@ def _normalize_measurements_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
         )
         normalized["device_ref_id"] = normalized["device"].apply(
             lambda value: value.get("id") if isinstance(value, dict) else None
+        )
+        normalized["device_location"] = normalized["device"].apply(
+            lambda value: value.get("location") if isinstance(value, dict) else None
+        )
+        normalized["device_latitude"] = normalized["device"].apply(
+            lambda value: value.get("latitude") if isinstance(value, dict) else None
+        )
+        normalized["device_longitude"] = normalized["device"].apply(
+            lambda value: value.get("longitude") if isinstance(value, dict) else None
         )
 
     existing_columns = list(normalized.columns)
@@ -247,6 +266,82 @@ def get_device_identifiers() -> list[str]:
 
     devices = dataframe["device_identifier"].dropna().astype(str).str.strip().replace("", pd.NA).dropna()
     return sorted(devices.unique().tolist())
+
+
+def _pick_first_non_empty(row: pd.Series, candidates: list[str]) -> Any:
+    for column in candidates:
+        if column in row.index:
+            value = row[column]
+            if pd.notna(value) and str(value).strip() != "":
+                return value
+    return None
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_devices_with_location() -> list[dict[str, Any]]:
+    dataframe = get_measurements(descending=True)
+    if dataframe.empty or "device_identifier" not in dataframe.columns:
+        return []
+
+    timestamp_column = _detect_existing_column(list(dataframe.columns), TIMESTAMP_CANDIDATES)
+    if timestamp_column:
+        dataframe = dataframe.sort_values(timestamp_column, ascending=False)
+
+    latest_per_device = dataframe.dropna(subset=["device_identifier"]).copy()
+    latest_per_device["device_identifier"] = latest_per_device["device_identifier"].astype(str).str.strip()
+    latest_per_device = latest_per_device[latest_per_device["device_identifier"] != ""]
+    latest_per_device = latest_per_device.drop_duplicates(subset=["device_identifier"], keep="first")
+
+    devices: list[dict[str, Any]] = []
+    for _, row in latest_per_device.iterrows():
+        device_identifier = str(row.get("device_identifier", "")).strip()
+        if not device_identifier:
+            continue
+
+        latitude = _to_float_or_none(_pick_first_non_empty(row, LATITUDE_CANDIDATES))
+        longitude = _to_float_or_none(_pick_first_non_empty(row, LONGITUDE_CANDIDATES))
+        location_text_raw = _pick_first_non_empty(row, LOCATION_TEXT_CANDIDATES)
+        location_text = str(location_text_raw).strip() if location_text_raw is not None else None
+        if location_text == "":
+            location_text = None
+
+        if location_text and latitude is not None and longitude is not None:
+            location_label = f"{location_text} ({latitude:.5f}, {longitude:.5f})"
+        elif location_text:
+            location_label = location_text
+        elif latitude is not None and longitude is not None:
+            location_label = f"{latitude:.5f}, {longitude:.5f}"
+        else:
+            location_label = "Locație necunoscută"
+
+        last_seen = row.get(timestamp_column) if timestamp_column else None
+        last_seen_iso = None
+        if timestamp_column and pd.notna(last_seen):
+            try:
+                last_seen_iso = pd.to_datetime(last_seen).isoformat()
+            except (TypeError, ValueError):
+                last_seen_iso = str(last_seen)
+
+        devices.append(
+            {
+                "device_identifier": device_identifier,
+                "location": location_text,
+                "latitude": latitude,
+                "longitude": longitude,
+                "location_label": location_label,
+                "last_seen": last_seen_iso,
+            }
+        )
+
+    return sorted(devices, key=lambda item: item["device_identifier"].lower())
 
 
 def summarize_measurements(dataframe: pd.DataFrame) -> dict[str, Any]:

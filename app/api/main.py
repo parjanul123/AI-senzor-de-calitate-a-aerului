@@ -14,7 +14,7 @@ from app.models.train_model import (
     train_and_save_svm,
 )
 from app.models.xgboost_model import train_and_save_xgboost
-from app.core.database import get_device_identifiers, get_measurements
+from app.core.database import get_device_identifiers, get_devices_with_location, get_measurements
 from app.services.chatbot import get_chatbot_reply, get_chatbot_welcome_message
 from app.services.anomaly_detector import detect_anomaly as detect_anomaly_service
 from app.services.predictor import build_forecast, predict_air_quality, summarize_forecast_average
@@ -191,11 +191,14 @@ def root():
 @app.get("/devices")
 def list_devices():
     try:
-        devices = get_device_identifiers()
+        device_details = get_devices_with_location()
+        devices = [item["device_identifier"] for item in device_details]
+        if not devices:
+            devices = get_device_identifiers()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    return {"status": "success", "devices": devices}
+    return {"status": "success", "devices": devices, "device_details": device_details}
 
 
 @app.post("/predict", response_model=PredictionResponse)
